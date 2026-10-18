@@ -21,7 +21,7 @@ const roots = [
   'cloudflare-env.d.ts', 'drizzle.config.ts', 'eslint.config.mjs',
   'next.config.ts', 'postcss.config.mjs', 'tsconfig.json', 'vite.config.ts',
   'app', 'build', 'db', 'drizzle', 'lib', 'server', 'tests', 'client/probe.mjs',
-  'skills/dot-link/SKILL.md', 'skills/dot-link/package.json',
+  'skills/dot-link-setup/SKILL.md', 'skills/dot-link/SKILL.md', 'skills/dot-link/package.json',
   'skills/dot-link/package-lock.json', 'skills/dot-link/scripts',
   'scripts/build-verified.sh', 'scripts/connector-preview',
   'scripts/execution-profile.mjs', 'scripts/install-ci.mjs',

@@ -46,7 +46,7 @@ Sites公開時に作られる**そのSiteの所有者用Plugin**を使います�
 
 ### 3. Dotの鍵を作り、交換リンクを返す
 
-Dot自身のクラウドPCで [Skill](prototype/skills/dot-link/SKILL.md) を読みます。以後は一つの永続的なSkill配置を使います。導入元リポジトリを使い、まだ依存がない場合:
+Dot自身のクラウドPCへ、[日常利用用 dot-link](prototype/skills/dot-link/SKILL.md) と [導入・更新用 dot-link-setup](prototype/skills/dot-link-setup/SKILL.md) を同じ永続的な親ディレクトリに配置し、利用環境のSkill導入手順で両方を発見可能にします。日常の「Dot Linkの交換リンクを出して」は dot-link を使います。スクリプト・依存・鍵は dot-link 側の一組を共有します。ファイルの保存だけで自動発見を確認したことにはしません。導入元リポジトリを使い、まだ依存がない場合:
 
 ```sh
 npm ci --prefix prototype/skills/dot-link

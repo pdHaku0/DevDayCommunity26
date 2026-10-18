@@ -1,4 +1,5 @@
 import skill from "../skills/dot-link/SKILL.md?raw";
+import setupSkill from "../skills/dot-link-setup/SKILL.md?raw";
 import autoUpdate from "../AUTO_UPDATE.md?raw";
 import safeErrors from "../skills/dot-link/scripts/safe-errors.mjs?raw";
 import doctor from "../skills/dot-link/scripts/doctor.mjs?raw";
@@ -8,10 +9,9 @@ import cryptography from "../skills/dot-link/scripts/crypto.mjs?raw";
 import protocol from "../skills/dot-link/scripts/protocol.mjs?raw";
 import pkg from "../skills/dot-link/package.json?raw";
 import lock from "../skills/dot-link/package-lock.json?raw";
-const root = "skill://dot-link/dot-link/";
+const base = "skill://dot-link/";
 const files: Record<string, string> = {
   "SKILL.md": skill,
-  "AUTO_UPDATE.md": autoUpdate,
   "scripts/cli.mjs": cli,
   "scripts/doctor.mjs": doctor,
   "scripts/safe-errors.mjs": safeErrors,
@@ -21,7 +21,13 @@ const files: Record<string, string> = {
   "package.json": pkg,
   "package-lock.json": lock,
 };
-async function entry() {
+const bundles: Record<string, Record<string, string>> = {
+  "dot-link": files,
+  "dot-link-setup": { "SKILL.md": setupSkill, "AUTO_UPDATE.md": autoUpdate },
+};
+async function entry(name: string) {
+  const root = base + name + "/";
+  const files = bundles[name];
   const resources = await Promise.all(
     Object.entries(files).map(async ([path, text]) => {
       const hash = await crypto.subtle.digest(
@@ -41,20 +47,24 @@ async function entry() {
   return {
     uri: root + "SKILL.md",
     frontmatter: {
-      name: "dot-link",
-      description: skill.match(/^description: (.+)$/m)![1],
+      name,
+      description: files["SKILL.md"].match(/^description: (.+)$/m)![1],
     },
     resources,
   };
 }
 export async function skillMethod(method: string, params: { uri?: string }) {
-  if (method === "skills/list") return { skills: [await entry()] };
-  if (method === "skills/get" && params.uri === root + "SKILL.md")
-    return { skill: await entry() };
-  if (method === "resources/read" && params.uri?.startsWith(root)) {
-    const text = files[params.uri.slice(root.length)];
-    if (text !== undefined)
-      return { contents: [{ uri: params.uri, mimeType: "text/plain", text }] };
+  if (method === "skills/list")
+    return { skills: await Promise.all(Object.keys(bundles).map(entry)) };
+  for (const [name, files] of Object.entries(bundles)) {
+    const root = base + name + "/";
+    if (method === "skills/get" && params.uri === root + "SKILL.md")
+      return { skill: await entry(name) };
+    if (method === "resources/read" && params.uri?.startsWith(root)) {
+      const path = params.uri.slice(root.length);
+      if (Object.hasOwn(files, path))
+        return { contents: [{ uri: params.uri, mimeType: "text/plain", text: files[path] }] };
+    }
   }
   throw new Error("Unknown skill resource");
 }
