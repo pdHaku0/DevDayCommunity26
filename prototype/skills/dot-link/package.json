@@ -1,0 +1,1 @@
+{"name":"dot-link-client","version":"0.1.0","private":true,"type":"module","engines":{"node":">=22.13.0"},"dependencies":{"libsodium-wrappers":"0.8.4"}}

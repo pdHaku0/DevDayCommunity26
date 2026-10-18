@@ -3,7 +3,8 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
-    "check:cloud": "node scripts/check-cloud.cjs"
+    "check:cloud": "node scripts/check-cloud.cjs",
+    "test": "npm --prefix prototype test"
   },
   "dependencies": {
     "picocolors": "1.1.1"
