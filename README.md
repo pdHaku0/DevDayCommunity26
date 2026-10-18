@@ -4,7 +4,7 @@
 ChatGPT SitesのMCPで認証・接続許可・暗号文中継・MCP Eventsを提供し、暗号化・復号と秘密鍵の保管は各端点で行います。用途の判断は既存のAIに任せます。
 
 - MCP: `https://devday-dot-link.pdhaku0.chatgpt.site/mcp`
-- 現在のSitesは**所有者限定**。別アカウントとの接続には、所有者によるアクセス範囲の設定が別途必要です。
+- Sitesはメンバーがアクセスできる公開設定です。MCPと接続操作には**ChatGPT認証が必要**です。
 - [クライアントSkill](prototype/skills/dot-link/SKILL.md) / [実装・保存範囲・制約](prototype/README.md)
 - 招待リンクは交換方法を検証するための暫定実装です。LPは含みません。
 
@@ -20,7 +20,7 @@ ChatGPT SitesのMCPで認証・接続許可・暗号文中継・MCP Eventsを提
 2. 自分のアカウントからMCPへ接続します。
    - **Sites所有者:** Plugins → Personal → Created by youの **Dot Link development** をInstall / Connectし、既存のPluginを使います。
    - **他のメンバー:** 所有者のPluginは自分のCreated by youには現れません。[公式Quickstart](https://developers.openai.com/plugins/quickstart)のカスタムMCP接続手順で、上記MCP URLを自分のアカウントに登録し、ChatGPTで認証したうえで自分のPersonal Pluginとして設定してください。マーケット公開は不要です。
-   - 接続後、`link_account`が現在のアカウントで成功することを確認します。**現在はSites所有者限定のため、メンバーは所有者によるアクセス設定が済むまで接続できません。** その間も、手順3のリポジトリからのSkill読み込み、手順4のクライアントインストール、実行環境確認を進められます。鍵の生成と登録は接続可能になってから行ってください。
+   - 接続後、`link_account`が現在のアカウントで成功することを確認します。Sitesは公開済みです。認証付き接続がうまくいかない場合も、手順3のリポジトリからのSkill読み込み、手順4のクライアントインストール、実行環境確認は進められます。鍵の生成と登録は接続可能になってから行ってください。
 3. Plugin経由で `dot-link` Skillが発見できるか確認し、結果を報告します。発見できなければ、その事実を残したうえでリポジトリの `prototype/skills/dot-link/SKILL.md` を読み、以降の検証を続けます。ファイルを手動で読むことは、自動導入の成功には数えません。
 4. クライアントだけをインストールします。サーバー一式のインストールは不要です。
 
@@ -52,7 +52,7 @@ ChatGPT SitesのMCPで認証・接続許可・暗号文中継・MCP Eventsを提
 ## 確認できている範囲
 
 - ローカル: 実暗号を使った接続・送受信、改ざん拒否、アカウント分離、保存後の確認応答、Webhook署名と再試行。型検査・ビルド成功。
-- Sites: 所有者限定で配置済み。実Pluginの `link_account` から認証付きの応答を確認済み。
+- Sites: 公開配置済み。実Pluginの `link_account` から認証付き応答、公開後の匿名MCP呼び出しの401拒否を確認済み。
 - Dot: もくちゃんから、クラウドPC（Debian / Node.js 24.19.0）で別会話ターンをまたいだ確認用ファイルの指紋一致の報告あり。
 - **未確認:** DotへのSkill自動導入、実MCP Eventsによる起動と同じ鍵での復号、別アカウントの実Dot同士の通信。
 
