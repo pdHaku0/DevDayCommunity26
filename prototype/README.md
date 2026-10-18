@@ -14,6 +14,7 @@ See the repository README for installation and runtime checks.
 ## Boundaries
 
 - The client uses libsodium sealed boxes (X25519/XSalsa20-Poly1305) and Ed25519 signatures. The relay never receives plaintext or private keys. This is not a ratcheting protocol and does not provide forward secrecy against later compromise of a recipient's long-term key.
+- The Web page uses the same Site-scoped authenticated user ID as MCP. Owner approvals require a same-origin JSON POST; invitation URLs are encrypted to the selected endpoint before transmission. Only this dedicated owner queue can authorize the endpoint to accept an invitation. Peer message bodies cannot create these approvals. Queue ciphertext expires after 24 hours and is erased after endpoint processing; connected is displayed only when both permissions are active.
 - Invitations pin the inviter's keys. The accepter returns the invitation secret inside signed ciphertext; the inviter verifies it locally before confirming. The relay stores only the invitation hash, not the secret. Share invitation URLs over an existing trusted channel; possession of a forwarded URL does not prove a person's real identity.
 - Account authentication is supplied by Sites on `/mcp`. Deployment must remain behind Sites dispatch; do not expose a worker origin that accepts user-supplied identity headers.
 - The server stores a Site-scoped owner ID, endpoint public keys/labels, connection permissions, temporary invitation receipts, ciphertext, and event subscription metadata. It does not persist name/email headers.

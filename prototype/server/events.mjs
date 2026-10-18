@@ -149,7 +149,13 @@ export async function subscribe(service, owner, p, fetcher = fetch) {
     subscription.peer,
     service.now(),
   );
-  if (pending || invitation) await service.notify(subscription.peer);
+  const connection = await service.one(
+    "SELECT id FROM connection_requests WHERE peer=? AND status='queued' AND expires>? LIMIT 1",
+    subscription.peer,
+    service.now(),
+  );
+  if (pending || invitation || connection)
+    await service.notify(subscription.peer);
   return {
     id,
     refreshBefore: new Date(expires).toISOString(),

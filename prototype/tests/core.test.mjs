@@ -11,6 +11,7 @@ import {
   registration,
   seal,
   open as decrypt,
+  sealConnectRequest,
 } from "../skills/dot-link/scripts/crypto.mjs";
 import {
   initialize,
@@ -30,6 +31,12 @@ import {
   eventName,
 } from "../server/events.mjs";
 import { handleMcp } from "../server/mcp.mjs";
+import { handleConnect } from "../server/web.mjs";
+import {
+  digest,
+  encode,
+  readInvitation,
+} from "../skills/dot-link/scripts/protocol.mjs";
 
 async function database() {
   const db = new DatabaseSync(":memory:");
@@ -114,8 +121,66 @@ test("two authenticated peers pair, persist verified ciphertext, acknowledge onc
     );
     const invitation = await invite(a);
     await execute(s, "alice", invitation.request);
-    const accepted = await accept(b, invitation.invitation);
-    await execute(s, "bob", accepted);
+    const token = await readInvitation(invitation.invitation, relay);
+    const requestId = await digest(
+      encode(["connect", token.id, b.identity.id]),
+    );
+    const ciphertext = await sealConnectRequest(
+      b.identity,
+      requestId,
+      invitation.invitation,
+    );
+    const request = (owner, origin = relay) =>
+      new Request(relay + "/api/connect", {
+        method: "POST",
+        headers: {
+          "oai-authenticated-user-id": owner,
+          origin,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          peer_id: b.identity.id,
+          request_id: requestId,
+          ciphertext,
+        }),
+      });
+    assert.equal((await handleConnect(request("eve"), adapter)).status, 403);
+    assert.equal(
+      (await handleConnect(request("bob", "https://evil.test"), adapter))
+        .status,
+      403,
+    );
+    const queued = await handleConnect(request("bob"), adapter);
+    assert.equal(queued.status, 200);
+    assert.equal((await queued.json()).status, "queued");
+    assert.equal((await handleConnect(request("bob"), adapter)).status, 200);
+    assert.equal(
+      db.prepare("SELECT count(*) AS n FROM connection_requests").get().n,
+      1,
+    );
+    assert.ok(
+      !JSON.stringify(
+        db.prepare("SELECT * FROM connection_requests").all(),
+      ).includes(token.secret),
+    );
+    await assert.rejects(() =>
+      s.call("bob", "connect.enqueue", { peer_id: b.identity.id }),
+    );
+    const ownerRequest = await ingest(
+      b,
+      await s.call("bob", "sync", { peer_id: b.identity.id }),
+    );
+    assert.deepEqual(ownerRequest.errors, []);
+    for (const action of ownerRequest.actions) await execute(s, "bob", action);
+    assert.equal(
+      (await s.connectionStatus("bob", requestId)).status,
+      "waiting",
+    );
+    assert.equal(
+      db.prepare("SELECT ciphertext FROM connection_requests").get().ciphertext,
+      null,
+    );
+    await assert.rejects(() => s.connectionStatus("eve", requestId));
     const incoming = await s.call("alice", "sync", { peer_id: a.identity.id });
     // A forged pairing response has a valid sender key but cannot prove possession of the invitation secret.
     const forged = structuredClone(incoming);
@@ -129,6 +194,10 @@ test("two authenticated peers pair, persist verified ciphertext, acknowledge onc
     const confirmed = await ingest(a, incoming);
     assert.equal(confirmed.errors.length, 0);
     for (const action of confirmed.actions) await execute(s, "alice", action);
+    assert.equal(
+      (await s.connectionStatus("bob", requestId)).status,
+      "connected",
+    );
     await ingest(a, await s.call("alice", "sync", { peer_id: a.identity.id }));
     await ingest(b, await s.call("bob", "sync", { peer_id: b.identity.id }));
     const outbound = await send(a, b.identity.id, {
@@ -171,18 +240,34 @@ test("two authenticated peers pair, persist verified ciphertext, acknowledge onc
       // A valid batch can exceed a single-message input limit. Exercise the
       // actual CLI and its durable state, not only the in-memory receiver.
       for (let i = 0; i < 4; i++)
-        await execute(s, "alice", await send(a, b.identity.id, "x".repeat(60000)));
+        await execute(
+          s,
+          "alice",
+          await send(a, b.identity.id, "x".repeat(60000)),
+        );
       const batch = await s.call("bob", "sync", { peer_id: b.identity.id });
       const received = spawnSync(
         process.execPath,
-        [fileURLToPath(new URL("../skills/dot-link/scripts/cli.mjs", import.meta.url)), "ingest"],
+        [
+          fileURLToPath(
+            new URL("../skills/dot-link/scripts/cli.mjs", import.meta.url),
+          ),
+          "ingest",
+        ],
         { input: JSON.stringify(batch), encoding: "utf8" },
       );
       assert.equal(received.status, 0, received.stderr);
       const result = JSON.parse(received.stdout);
       assert.deepEqual(result.errors, []);
-      const persisted = await transact(async (state) => ({ output: await inbox(state) }));
-      assert.equal(persisted.messages.filter((m) => typeof m.body === "string" && m.body.length === 60000).length, 4);
+      const persisted = await transact(async (state) => ({
+        output: await inbox(state),
+      }));
+      assert.equal(
+        persisted.messages.filter(
+          (m) => typeof m.body === "string" && m.body.length === 60000,
+        ).length,
+        4,
+      );
       for (const action of result.actions) await execute(s, "bob", action);
     } finally {
       if (prior === undefined) delete process.env.DOT_LINK_HOME;

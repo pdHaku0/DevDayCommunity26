@@ -7,6 +7,7 @@ import {
   checkEnvelope,
   digest,
   encode,
+  unb64,
   MESSAGE_TTL,
   INVITE_TTL,
 } from "../skills/dot-link/scripts/protocol.mjs";
@@ -32,6 +33,14 @@ export const identitySchema = z
   })
   .strict();
 const schemas = {
+  "connect.complete": z
+    .object({
+      peer_id: id,
+      request_id: id,
+      status: z.enum(["accepted", "failed"]),
+      other: id.optional(),
+    })
+    .strict(),
   "invite.create": z.object({ peer_id: id, invite_id: id }).strict(),
   "invite.accept": z
     .object({ peer_id: id, invite_id: id, receipt: envelope })
@@ -148,7 +157,89 @@ export class Service {
         now,
       ),
       this.q("DELETE FROM subscriptions WHERE expires<=?", now),
+      this.q("DELETE FROM connection_requests WHERE expires<=?", now),
     ]);
+  }
+  async connectionStatus(owner, requestId) {
+    const request = await this.one(
+      "SELECT r.* FROM connection_requests r JOIN peers p ON p.id=r.peer WHERE r.id=? AND p.owner=?",
+      requestId,
+      owner,
+    );
+    requireThat(request, "not_found", "Connection request unavailable");
+    let status = request.status;
+    if (request.expires <= this.now()) status = "expired";
+    else if (status === "accepted") {
+      const contact = await this.one(
+        "SELECT a FROM contacts WHERE a=? AND b=? AND active=1 AND EXISTS(SELECT 1 FROM contacts WHERE a=? AND b=? AND active=1)",
+        request.peer,
+        request.other,
+        request.other,
+        request.peer,
+      );
+      status = contact ? "connected" : "waiting";
+    }
+    return { id: request.id, status };
+  }
+  async queueConnection(owner, input) {
+    const a = z
+      .object({
+        peer_id: id,
+        request_id: id,
+        ciphertext: z.string().max(18000),
+      })
+      .strict()
+      .parse(input);
+    await this.owned(owner, a.peer_id);
+    const bytes = unb64(a.ciphertext);
+    requireThat(
+      bytes.length >= 48 && bytes.length <= 12048,
+      "invalid_input",
+      "Invalid encrypted request size",
+    );
+    const old = await this.one(
+      "SELECT peer FROM connection_requests WHERE id=?",
+      a.request_id,
+    );
+    if (old) {
+      requireThat(
+        old.peer === a.peer_id,
+        "conflict",
+        "Request ID already exists",
+      );
+      return this.connectionStatus(owner, a.request_id);
+    }
+    requireThat(
+      (
+        await this.one(
+          "SELECT count(*) AS n FROM connection_requests WHERE peer=? AND expires>?",
+          a.peer_id,
+          this.now(),
+        )
+      ).n < 20,
+      "limit",
+      "Too many connection requests",
+    );
+    await this.run(
+      "INSERT OR IGNORE INTO connection_requests(id,peer,ciphertext,created,expires) VALUES(?,?,?,?,?)",
+      a.request_id,
+      a.peer_id,
+      a.ciphertext,
+      this.now(),
+      this.now() + MESSAGE_TTL,
+    );
+    // The database binds this owner-authorized request to the selected endpoint.
+    const saved = await this.one(
+      "SELECT peer FROM connection_requests WHERE id=?",
+      a.request_id,
+    );
+    requireThat(
+      saved.peer === a.peer_id,
+      "conflict",
+      "Request ID already exists",
+    );
+    await this.notify(a.peer_id);
+    return this.connectionStatus(owner, a.request_id);
   }
   async notify(peer) {
     const subs = await this.all(
@@ -179,6 +270,43 @@ export class Service {
     );
     await this.cleanup();
     switch (operation) {
+      case "connect.complete": {
+        const request = await this.one(
+          "SELECT * FROM connection_requests WHERE id=? AND peer=?",
+          a.request_id,
+          peer.id,
+        );
+        requireThat(request, "not_found", "Connection request unavailable");
+        if (request.status !== "queued") {
+          requireThat(
+            request.status === a.status &&
+              (a.status !== "accepted" || request.other === a.other),
+            "conflict",
+            "Connection request already processed",
+          );
+          return this.connectionStatus(owner, request.id);
+        }
+        if (a.status === "accepted") {
+          requireThat(
+            a.other &&
+              (await this.one(
+                "SELECT id FROM invites WHERE inviter=? AND acceptor=? AND receipt IS NOT NULL",
+                a.other,
+                peer.id,
+              )),
+            "invalid_input",
+            "Accept the invitation before completing its request",
+          );
+        }
+        await this.run(
+          "UPDATE connection_requests SET status=?,other=?,ciphertext=NULL WHERE id=? AND peer=? AND status='queued'",
+          a.status,
+          a.other || null,
+          a.request_id,
+          peer.id,
+        );
+        return this.connectionStatus(owner, request.id);
+      }
       case "invite.create": {
         const old = await this.one(
           "SELECT * FROM invites WHERE id=?",
@@ -294,6 +422,11 @@ export class Service {
         );
         return {
           contacts,
+          connection_requests: await this.all(
+            "SELECT id,ciphertext,created,expires FROM connection_requests WHERE peer=? AND status='queued' AND expires>? ORDER BY created LIMIT 20",
+            peer.id,
+            this.now(),
+          ),
           invitations: invitations.map((i) => ({
             invite_id: i.id,
             peer: { id: i.peer_id, label: i.label, box: i.box, sign: i.sign },

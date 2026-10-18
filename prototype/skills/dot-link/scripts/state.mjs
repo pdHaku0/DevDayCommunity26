@@ -1,7 +1,13 @@
 import { mkdir, readFile, open, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { createIdentity, seal, open as decrypt, sign } from "./crypto.mjs";
+import {
+  createIdentity,
+  seal,
+  open as decrypt,
+  sign,
+  openConnectRequest,
+} from "./crypto.mjs";
 import {
   b64,
   unb64,
@@ -11,6 +17,8 @@ import {
   checkIdentity,
   verify,
   INVITE_TTL,
+  inviteBytes,
+  readInvitation,
 } from "./protocol.mjs";
 export const stateDirectory = () =>
   process.env.DOT_LINK_HOME || join(homedir(), ".local", "share", "dot-link");
@@ -82,16 +90,6 @@ export const call = (operation, input) => ({
   tool: "link_exchange",
   arguments: { operation, input },
 });
-const inviteBytes = (t) =>
-  encode([
-    "dot-link",
-    "invite",
-    t.relay,
-    t.id,
-    t.secret,
-    t.expires,
-    publicIdentity(t.peer),
-  ]);
 export async function invite(state) {
   const secret = b64(crypto.getRandomValues(new Uint8Array(32))),
     id = await digest(secret);
@@ -115,19 +113,7 @@ export async function invite(state) {
   };
 }
 export async function accept(state, url) {
-  const u = new URL(url);
-  if (u.origin !== state.relay || u.pathname !== "/connect")
-    throw new Error("Invitation relay differs from configured relay");
-  const t = JSON.parse(new TextDecoder().decode(unb64(u.hash.slice(1))));
-  await checkIdentity(t.peer);
-  unb64(t.secret, 32);
-  if (
-    t.relay !== state.relay ||
-    t.expires <= Date.now() ||
-    (await digest(t.secret)) !== t.id ||
-    !(await verify(t.peer.sign, inviteBytes(t), t.signature))
-  )
-    throw new Error("Invalid or expired invitation");
+  const t = await readInvitation(url, state.relay);
   if (t.peer.id === state.identity.id)
     throw new Error("Cannot connect to yourself");
   const known = state.peers[t.peer.id];
@@ -150,6 +136,35 @@ export async function accept(state, url) {
 export async function ingest(state, response) {
   const actions = [],
     errors = [];
+  for (const request of response.connection_requests || []) {
+    try {
+      const payload = openConnectRequest(state.identity, request);
+      const invitation = await readInvitation(payload.url, state.relay);
+      const expected = await digest(
+        encode(["connect", invitation.id, state.identity.id]),
+      );
+      if (expected !== request.id)
+        throw new Error("Connection request ID mismatch");
+      actions.push(await accept(state, payload.url));
+      actions.push(
+        call("connect.complete", {
+          peer_id: state.identity.id,
+          request_id: request.id,
+          status: "accepted",
+          other: invitation.peer.id,
+        }),
+      );
+    } catch (e) {
+      errors.push({ request_id: request.id, error: e.message });
+      actions.push(
+        call("connect.complete", {
+          peer_id: state.identity.id,
+          request_id: request.id,
+          status: "failed",
+        }),
+      );
+    }
+  }
   for (const item of response.invitations || []) {
     try {
       const saved = state.invites[item.invite_id];

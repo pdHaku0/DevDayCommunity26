@@ -63,3 +63,16 @@ export const deliveries = sqliteTable("deliveries", {
   next: integer().notNull(),
   status: text().notNull().default("pending"),
 });
+export const connectionRequests = sqliteTable(
+  "connection_requests",
+  {
+    id: text().primaryKey(),
+    peer: text().notNull(),
+    ciphertext: text(),
+    created: integer().notNull(),
+    expires: integer().notNull(),
+    status: text().notNull().default("queued"),
+    other: text(),
+  },
+  (t) => [index("connection_requests_peer").on(t.peer)],
+);

@@ -36,6 +36,33 @@ export const publicIdentity = (identity) => ({
 });
 export const identityBytes = (p) =>
   encode([PROTOCOL, "identity", p.id, p.label, p.box, p.sign]);
+export const inviteBytes = (t) =>
+  encode([
+    PROTOCOL,
+    "invite",
+    t.relay,
+    t.id,
+    t.secret,
+    t.expires,
+    publicIdentity(t.peer),
+  ]);
+export async function readInvitation(url, relay) {
+  const u = new URL(url);
+  if (u.origin !== relay || u.pathname !== "/connect" || u.hash.length > 8192)
+    throw new Error("Invalid invitation URL");
+  const t = JSON.parse(new TextDecoder().decode(unb64(u.hash.slice(1))));
+  await checkIdentity(t.peer);
+  unb64(t.secret, 32);
+  if (
+    t.relay !== relay ||
+    !Number.isSafeInteger(t.expires) ||
+    t.expires <= Date.now() ||
+    (await digest(t.secret)) !== t.id ||
+    !(await verify(t.peer.sign, inviteBytes(t), t.signature))
+  )
+    throw new Error("Invalid or expired invitation");
+  return t;
+}
 export const envelopeBytes = (e) =>
   encode([
     PROTOCOL,

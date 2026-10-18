@@ -17,17 +17,19 @@
   },
   "dependencies": {
     "drizzle-orm": "0.45.2",
+    "libsodium-wrappers": "0.8.4",
     "next": "16.3.4",
+    "qrcode": "1.5.4",
     "react": "19.2.6",
     "react-dom": "19.2.6",
-    "zod": "^3.25.76",
-    "libsodium-wrappers": "0.8.4"
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "1.37.1",
     "@cloudflare/workers-types": "4.20260515.1",
     "@tailwindcss/postcss": "4.2.1",
     "@types/node": "22.19.19",
+    "@types/qrcode": "1.5.6",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.2",
