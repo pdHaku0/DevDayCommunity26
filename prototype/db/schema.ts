@@ -110,3 +110,15 @@ export const federatedDeliveries = sqliteTable("f_deliveries", {
   occurred: integer().notNull(), attempts: integer().notNull().default(0),
   next: integer().notNull(), status: text().notNull().default("pending"),
 });
+
+export const updatePreferences = sqliteTable("f_update_preferences", {
+  peer: text().primaryKey(),
+  notified_version: integer().notNull(),
+  automatic: integer().notNull().default(0),
+});
+export const updateSubscribers = sqliteTable("f_update_subscribers", {
+  origin: text().primaryKey(),
+  last_version: integer().notNull(),
+  lease_until: integer().notNull().default(0),
+  retry_after: integer().notNull().default(0),
+});

@@ -1,4 +1,5 @@
 import skill from "../skills/dot-link/SKILL.md?raw";
+import autoUpdate from "../AUTO_UPDATE.md?raw";
 import safeErrors from "../skills/dot-link/scripts/safe-errors.mjs?raw";
 import doctor from "../skills/dot-link/scripts/doctor.mjs?raw";
 import cli from "../skills/dot-link/scripts/cli.mjs?raw";
@@ -10,6 +11,7 @@ import lock from "../skills/dot-link/package-lock.json?raw";
 const root = "skill://dot-link/dot-link/";
 const files: Record<string, string> = {
   "SKILL.md": skill,
+  "AUTO_UPDATE.md": autoUpdate,
   "scripts/cli.mjs": cli,
   "scripts/doctor.mjs": doctor,
   "scripts/safe-errors.mjs": safeErrors,

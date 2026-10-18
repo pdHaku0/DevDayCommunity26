@@ -1,3 +1,6 @@
+import { handleUpdates } from "../server/updates.mjs";
+import { Service } from "../server/service.mjs";
+import { drain } from "../server/events.mjs";
 import { skillMethod } from "../server/skills";
 import { handleMcp } from "../server/mcp.mjs";
 import { handleFederation } from "../server/federation.mjs";
@@ -11,6 +14,13 @@ export default {
     env: Cloudflare.Env,
     ctx: ExecutionContext<{ CONNECTORS?: ConnectorBinding }>,
   ) {
+    if (new URL(request.url).pathname.startsWith("/api/updates")) {
+      const service = new Service(env.DB, {origin: new URL(request.url).origin});
+      return handleUpdates(request, service).then((response: Response) => {
+        ctx.waitUntil(drain(service));
+        return response;
+      });
+    }
     if (new URL(request.url).pathname === "/mcp")
       return handleMcp(request, env.DB, ctx, { skillMethod });
     if (new URL(request.url).pathname === "/api/federation")

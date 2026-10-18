@@ -14,7 +14,7 @@ import {
   disconnect,
 } from "./state.mjs";
 const [command, ...args] = process.argv.slice(2);
-const stage = ["init", "status", "invite", "accept", "sync", "ingest", "send", "retry", "inbox", "read", "disconnect"].includes(command) ? command : "cli";
+const stage = ["init", "unregister", "status", "invite", "accept", "sync", "ingest", "send", "retry", "inbox", "read", "disconnect"].includes(command) ? command : "cli";
 const requestId = crypto.randomUUID();
 const input = async () => {
   let s = "";
@@ -46,6 +46,9 @@ try {
     if (!state) throw new ClientError("Run init first");
     let output;
     switch (command) {
+      case "unregister":
+        output = {tool: "link_unregister", arguments: {peer_id: state.identity.id}};
+        break;
       case "status":
         output = {
           identity: publicIdentity(state.identity),
@@ -86,7 +89,7 @@ try {
         break;
       default:
         throw new ClientError(
-          "Commands: init LABEL OWN_SITE_URL, status, invite, accept URL, sync, ingest < result.json, send PEER < body.json, retry PACKET_ID, inbox, read ID, disconnect PEER",
+          "Commands: init LABEL OWN_SITE_URL, status, invite, accept URL, sync, ingest < result.json, send PEER < body.json, retry PACKET_ID, inbox, read ID, disconnect PEER, unregister",
         );
     }
     return { state, output };

@@ -1,3 +1,4 @@
+import { updateNotice } from "./updates.mjs";
 import { LinkError, diagnostic, responseJson, transportFailure } from "./errors.mjs";
 import { digest, encode } from "../skills/dot-link/scripts/protocol.mjs";
 import { requireThat } from "./service.mjs";
@@ -5,7 +6,7 @@ export const eventName = "link.inbox_changed";
 export const eventDefinition = {
   name: eventName,
   description:
-    "Encrypted mail or a connection request is waiting for your registered peer. Use the dot-link skill to synchronize; the event contains no message content.",
+    "Encrypted mail, a connection request, or a software update is waiting for your registered peer. Use the dot-link skill to synchronize; the event contains no message content.",
   delivery: ["webhook"],
   inputSchema: {
     type: "object",
@@ -137,14 +138,17 @@ export async function subscribe(service, owner, p, fetcher = fetch) {
   );
   const expires = service.now() + Math.min(p.ttlMs ?? 86400000, 86400000);
   await service.run(
-    "INSERT INTO f_subscriptions(id,owner,peer,url,secret,expires) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET secret=excluded.secret,expires=excluded.expires",
+    "INSERT INTO f_subscriptions(id,owner,peer,url,secret,expires) SELECT ?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM f_peers WHERE id=? AND owner=?) ON CONFLICT(id) DO UPDATE SET secret=excluded.secret,expires=excluded.expires",
     id,
     owner,
     subscription.peer,
     url,
     subscription.secret,
     expires,
+    subscription.peer,
+    owner,
   );
+  requireThat(await service.one("SELECT id FROM f_subscriptions WHERE id=? AND owner=?", id, owner), "not_found", "Endpoint was removed during subscription verification");
   // A fresh subscription also signals mail already waiting; events are hints, sync is authoritative.
   const pending = await service.one(
     "SELECT id FROM f_messages WHERE recipient=? AND envelope IS NOT NULL AND expires>? LIMIT 1",
@@ -156,7 +160,8 @@ export async function subscribe(service, owner, p, fetcher = fetch) {
     subscription.peer,
     service.now(),
   );
-  if (pending || invitation)
+  const update = await updateNotice(service, subscription.peer);
+  if (pending || invitation || update)
     await service.notify(subscription.peer);
   return {
     id,

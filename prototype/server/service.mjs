@@ -1,3 +1,4 @@
+import { updateNotice } from "./updates.mjs";
 import { LinkError, remoteMetadata, responseJson, transportFailure } from "./errors.mjs";
 import { z } from "zod";
 import {
@@ -24,6 +25,7 @@ function same(a, b) {
   return JSON.stringify(publicIdentity(a)) === JSON.stringify(publicIdentity(b));
 }
 export class Service {
+  /** @param {any} db @param {{origin?: string, fetcher?: typeof fetch, now?: () => number, requestId?: string}} options */
   constructor(db, { origin, fetcher = fetch, now = () => Date.now(), requestId = crypto.randomUUID() } = {}) {
     this.db = db;
     this.requestId = requestId;
@@ -61,6 +63,23 @@ export class Service {
     await this.run("INSERT INTO f_peers(id,owner,label,box,sign,relay,created) VALUES(?,?,?,?,?,?,?)", p.id, owner, p.label, p.box, p.sign, p.relay, this.now());
     return publicIdentity(p);
   }
+  async unregister(owner, peerId) {
+    id.parse(peerId);
+    const existing = await this.one("SELECT owner FROM f_peers WHERE id=?", peerId);
+    if (!existing) return { deleted: true, peer_id: peerId };
+    requireThat(existing.owner === owner, "forbidden", "Peer is not owned by this account");
+    await this.db.batch([
+      this.q("DELETE FROM f_deliveries WHERE (peer=? OR subscription IN (SELECT id FROM f_subscriptions WHERE peer=?)) AND EXISTS(SELECT 1 FROM f_peers WHERE id=? AND owner=?)", peerId, peerId, peerId, owner),
+      this.q("DELETE FROM f_subscriptions WHERE peer=? AND EXISTS(SELECT 1 FROM f_peers WHERE id=? AND owner=?)", peerId, peerId, owner),
+      this.q("DELETE FROM f_update_preferences WHERE peer=? AND EXISTS(SELECT 1 FROM f_peers WHERE id=? AND owner=?)", peerId, peerId, owner),
+      this.q("DELETE FROM f_messages WHERE (recipient=? OR sender=?) AND EXISTS(SELECT 1 FROM f_peers WHERE id=? AND owner=?)", peerId, peerId, peerId, owner),
+      this.q("DELETE FROM f_invites WHERE (inviter=? OR json_extract(acceptor,'$.id')=?) AND EXISTS(SELECT 1 FROM f_peers WHERE id=? AND owner=?)", peerId, peerId, peerId, owner),
+      this.q("DELETE FROM f_connections WHERE (local=? OR remote=?) AND EXISTS(SELECT 1 FROM f_peers WHERE id=? AND owner=?)", peerId, peerId, peerId, owner),
+      this.q("DELETE FROM f_packets WHERE sender=? AND EXISTS(SELECT 1 FROM f_peers WHERE id=? AND owner=?)", peerId, peerId, owner),
+      this.q("DELETE FROM f_peers WHERE id=? AND owner=?", peerId, owner),
+    ]);
+    return { deleted: true, peer_id: peerId };
+  }
   async cleanup() {
     const now = this.now();
     await this.db.batch([
@@ -77,8 +96,8 @@ export class Service {
       // Each change needs its own delivery: an in-flight callback may already
       // have triggered a sync before this change arrived. Completing that older
       // callback must not consume the new wake-up.
-      "INSERT INTO f_deliveries(id,subscription,peer,occurred,next) VALUES(?,?,?,?,?)",
-      crypto.randomUUID(), s.id, peer, this.now(), this.now(),
+      "INSERT INTO f_deliveries(id,subscription,peer,occurred,next) SELECT ?,?,?,?,? WHERE EXISTS(SELECT 1 FROM f_subscriptions s JOIN f_peers p ON p.id=s.peer WHERE s.id=? AND s.peer=? AND s.expires>?)",
+      crypto.randomUUID(), s.id, peer, this.now(), this.now(), s.id, peer, this.now(),
     )));
   }
   async connection(local, remote, connectionId) {
@@ -94,7 +113,7 @@ export class Service {
     }
     requireThat(!(await this.one("SELECT 1 FROM f_connections WHERE local=? AND remote=? AND status<>'closed'", local, remote.id)), "conflict", "A connection to this endpoint already exists");
     requireThat((await this.one("SELECT count(*) AS n FROM f_connections WHERE local=?", local)).n < 200, "limit", "Connection limit reached");
-    await this.run("INSERT OR IGNORE INTO f_connections(local,remote,connection_id,identity,status,created) VALUES(?,?,?,?,?,?)", local, remote.id, connectionId, JSON.stringify(publicIdentity(remote)), status, this.now());
+    await this.run("INSERT OR IGNORE INTO f_connections(local,remote,connection_id,identity,status,created) SELECT ?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM f_peers WHERE id=?)", local, remote.id, connectionId, JSON.stringify(publicIdentity(remote)), status, this.now(), local);
     const saved = await this.connection(local, remote.id, connectionId);
     requireThat(saved && saved.status !== "closed" && same(JSON.parse(saved.identity), remote), "conflict", "Connection changed during pairing");
     return saved;
@@ -106,9 +125,9 @@ export class Service {
   }
   async remember(packet, direction) {
     const fingerprint = await digest(packetBytes(packet));
-    await this.run("INSERT OR IGNORE INTO f_packets(id,direction,sender,fingerprint,created,expires) VALUES(?,?,?,?,?,?)", packet.id, direction, packet.from.id, fingerprint, this.now(), packet.expires);
+    await this.run("INSERT OR IGNORE INTO f_packets(id,direction,sender,fingerprint,created,expires) SELECT ?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM f_peers WHERE id=?)", packet.id, direction, packet.from.id, fingerprint, this.now(), packet.expires, packet.from.id);
     const row = await this.one("SELECT fingerprint FROM f_packets WHERE id=? AND direction=?", packet.id, direction);
-    requireThat(row.fingerprint === fingerprint, "conflict", "Packet ID reused with different content");
+    requireThat(row && row.fingerprint === fingerprint, "conflict", "Packet ID reused with different content");
   }
   async close(local, remote, connectionId) {
     await this.db.batch([
@@ -179,7 +198,7 @@ export class Service {
         this.q("UPDATE f_invites SET confirmed=1 WHERE id=? AND inviter=?", b.invite_id, local.id),
       ]);
       const c = await this.connection(local.id, packet.to.id, b.invite_id);
-      requireThat(c.status === "active", "closed", "Connection was closed during confirmation");
+      requireThat(c?.status === "active", "closed", "Connection was closed during confirmation");
       return { connected: true, packet_id: packet.id };
     }
     return { ...result, packet_id: packet.id, delivered: true };
@@ -201,7 +220,7 @@ export class Service {
       requireThat(!inv.acceptance || inv.acceptance === fingerprint, "consumed", "Invitation already accepted");
       await this.run("UPDATE f_invites SET acceptor=?,receipt=?,acceptance=? WHERE id=? AND acceptor IS NULL", JSON.stringify(publicIdentity(packet.from)), JSON.stringify(b.receipt), fingerprint, inv.id);
       const saved = await this.one("SELECT * FROM f_invites WHERE id=?", inv.id);
-      requireThat(saved.acceptance === fingerprint, "consumed", "Invitation already accepted; retry the original packet");
+      requireThat(saved?.acceptance === fingerprint, "consumed", "Invitation already accepted; retry the original packet");
       if (!inv.acceptor && !saved.confirmed) await this.notify(local.id);
       return { pending: !saved.confirmed };
     }
@@ -209,7 +228,7 @@ export class Service {
       const previous = await this.requireConnection(local.id, packet.from, b.invite_id, ["outbound", "active"]);
       await this.run("UPDATE f_connections SET status='active' WHERE local=? AND remote=? AND connection_id=? AND status='outbound'", local.id, packet.from.id, b.invite_id);
       const c = await this.connection(local.id, packet.from.id, b.invite_id);
-      requireThat(c.status === "active", "closed", "Connection is closed");
+      requireThat(c?.status === "active", "closed", "Connection is closed");
       if (previous.status !== "active") await this.notify(local.id);
       return { connected: true };
     }
@@ -220,7 +239,7 @@ export class Service {
         const inv = await this.one("SELECT acceptor FROM f_invites WHERE id=? AND inviter=? AND expires>?", b.connection_id, local.id, this.now());
         requireThat(inv?.acceptor && same(JSON.parse(inv.acceptor), packet.from), "not_connected", "No accepted invitation to withdraw");
         requireThat((await this.one("SELECT count(*) AS n FROM f_connections WHERE local=?", local.id)).n < 200, "limit", "Connection limit reached");
-        await this.run("INSERT OR IGNORE INTO f_connections(local,remote,connection_id,identity,status,created) SELECT ?,?,?,?,'closed',? WHERE NOT EXISTS(SELECT 1 FROM f_connections WHERE local=? AND remote=? AND status<>'closed')", local.id, packet.from.id, b.connection_id, JSON.stringify(publicIdentity(packet.from)), this.now(), local.id, packet.from.id);
+        await this.run("INSERT OR IGNORE INTO f_connections(local,remote,connection_id,identity,status,created) SELECT ?,?,?,?,'closed',? WHERE NOT EXISTS(SELECT 1 FROM f_connections WHERE local=? AND remote=? AND status<>'closed') AND EXISTS(SELECT 1 FROM f_invites WHERE id=? AND inviter=? AND acceptor=?)", local.id, packet.from.id, b.connection_id, JSON.stringify(publicIdentity(packet.from)), this.now(), local.id, packet.from.id, b.connection_id, local.id, JSON.stringify(publicIdentity(packet.from)));
         previous = await this.connection(local.id, packet.from.id, b.connection_id);
         requireThat(previous && same(JSON.parse(previous.identity), packet.from), "conflict", "Connection changed during withdrawal");
         await this.close(local.id, packet.from.id, b.connection_id);
@@ -261,7 +280,8 @@ export class Service {
       }
       requireThat((await this.one("SELECT count(*) AS n FROM f_invites WHERE inviter=?", peer.id)).n < 20, "limit", "Too many active invitations");
       const expires = this.now() + INVITE_TTL;
-      await this.run("INSERT INTO f_invites(id,inviter,expires) VALUES(?,?,?)", a.invite_id, peer.id, expires);
+      await this.run("INSERT INTO f_invites(id,inviter,expires) SELECT ?,?,? WHERE EXISTS(SELECT 1 FROM f_peers WHERE id=? AND owner=?)", a.invite_id, peer.id, expires, peer.id, owner);
+      requireThat(await this.one("SELECT id FROM f_invites WHERE id=? AND inviter=?", a.invite_id, peer.id), "not_found", "Endpoint was removed during invitation creation");
       return { invite_id: a.invite_id, expires };
     }
     if (operation === "ack") {
@@ -272,6 +292,7 @@ export class Service {
     const contacts = [...new Map(rows.map(c => [c.remote, c]).reverse()).values()].map(c => ({...JSON.parse(c.identity), active: c.status === "active", closed: c.status === "closed", connection_id: c.connection_id}));
     return {
       contacts,
+      update: await updateNotice(this, peer.id),
       invitations: (await this.all("SELECT * FROM f_invites WHERE inviter=? AND receipt IS NOT NULL AND confirmed=0 AND NOT EXISTS(SELECT 1 FROM f_connections c WHERE c.local=f_invites.inviter AND c.connection_id=f_invites.id AND c.status='closed')", peer.id)).map(i => ({invite_id: i.id, peer: JSON.parse(i.acceptor), receipt: JSON.parse(i.receipt)})),
       messages: (await this.all("SELECT envelope FROM f_messages WHERE recipient=? AND envelope IS NOT NULL AND expires>? ORDER BY created,id LIMIT 50", peer.id, this.now())).map(m => JSON.parse(m.envelope)),
     };

@@ -344,3 +344,97 @@ test("event subscription binds ownership, verifies callback, signs notifications
     db.close();
   }
 });
+
+test("unregister is owner-only and idempotent, erases related state, and cannot be undone by in-flight work", async () => {
+  const da = await database(), db = await database();
+  const sa = new Service(da.adapter,{origin:ORIGIN_A}), sb = new Service(db.adapter,{origin:ORIGIN_B});
+  const a = await initialize("Removed",ORIGIN_A), keep = await initialize("Retained",ORIGIN_A), b = await initialize("Remote",ORIGIN_B);
+  const echo = async (_url,init) => Response.json({challenge:JSON.parse(init.body).challenge});
+  const subscription = peer => ({name:eventName,arguments:{peer_id:peer},delivery:{
+    mode:"webhook",url:"https://chatgpt.com/events/unregister-test",secret:"whsec_"+Buffer.alloc(32,9).toString("base64"),
+  }});
+  const sync = (s,owner,state) => s.call(owner,"sync",{peer_id:state.identity.id});
+  const transport = (url,init) => handleFederation(new Request(url,init),new URL(url).origin === ORIGIN_A ? da.adapter : db.adapter);
+  sa.fetcher = sb.fetcher = transport;
+  const noRelatedState = peer => {
+    for (const [table,condition,args] of [
+      ["f_peers","id=?",[peer]], ["f_invites","inviter=? OR json_extract(acceptor,'$.id')=?",[peer,peer]],
+      ["f_connections","local=? OR remote=?",[peer,peer]], ["f_messages","recipient=? OR sender=?",[peer,peer]],
+      ["f_packets","sender=?",[peer]], ["f_subscriptions","peer=?",[peer]],
+      ["f_deliveries","peer=?",[peer]], ["f_update_preferences","peer=?",[peer]],
+    ]) assert.equal(da.db.prepare(`SELECT count(*) AS n FROM ${table} WHERE ${condition}`).get(...args).n,0,table);
+  };
+  try {
+    await sa.register("alice",registration(a.identity));
+    await sa.register("alice",registration(keep.identity));
+    await sb.register("bob",registration(b.identity));
+    const issued = await invite(a), retainedInvite = await invite(keep);
+    await execute(sa,"alice",issued.request);
+    await execute(sa,"alice",retainedInvite.request);
+    await subscribe(sa,"alice",subscription(a.identity.id),echo);
+    const keptSubscription = await subscribe(sa,"alice",subscription(keep.identity.id),echo);
+    for (const peer of [a.identity.id,keep.identity.id])
+      await sa.run("INSERT INTO f_update_preferences(peer,notified_version) VALUES(?,?)",peer,"test-version");
+    await execute(sb,"bob",await accept(b,issued.invitation));
+    const accepted = await ingest(a,await sync(sa,"alice",a));
+    assert.deepEqual(accepted.errors,[]);
+    for (const action of accepted.actions) await execute(sa,"alice",action);
+    await ingest(a,await sync(sa,"alice",a));
+    await ingest(b,await sync(sb,"bob",b));
+    await execute(sa,"alice",await send(a,b.identity.id,{text:"outbound"}));
+    const incoming = await send(b,a.identity.id,{text:"delete with registration"});
+    await execute(sb,"bob",incoming);
+    await sa.notify(keep.identity.id);
+    await assert.rejects(() => sa.unregister("mallory",a.identity.id),e => e.code === "forbidden");
+    assert.equal((await sync(sa,"alice",a)).messages.length,1);
+    const deletion = await handleMcp(new Request(ORIGIN_A+"/mcp",{
+      method:"POST",headers:{"content-type":"application/json","oai-authenticated-user-id":"alice"},
+      body:JSON.stringify({jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"link_unregister",arguments:{peer_id:a.identity.id}}}),
+    }),da.adapter);
+    assert.deepEqual((await deletion.json()).result.structuredContent,{deleted:true,peer_id:a.identity.id});
+    noRelatedState(a.identity.id);
+    assert.deepEqual(await sa.unregister("alice",a.identity.id),{deleted:true,peer_id:a.identity.id});
+    assert.deepEqual((await sa.account("alice")).peers.map(p => p.id),[keep.identity.id]);
+    assert.equal((await sa.account("alice")).subscriptions[0].id,keptSubscription.id);
+    assert.equal(da.db.prepare("SELECT count(*) AS n FROM f_invites WHERE inviter=?").get(keep.identity.id).n,1);
+    assert.equal(da.db.prepare("SELECT count(*) AS n FROM f_deliveries WHERE peer=?").get(keep.identity.id).n,1);
+    assert.equal(da.db.prepare("SELECT count(*) AS n FROM f_update_preferences WHERE peer=?").get(keep.identity.id).n,1);
+    await assert.rejects(() => sa.receive(incoming.arguments.input.packet),e => e.code === "not_found");
+    await assert.rejects(() => sync(sa,"alice",a),e => e.code === "forbidden");
+
+    // A real external verification can complete after the owner removes its endpoint.
+    const race = await initialize("Unregister during verification",ORIGIN_A);
+    await sa.register("alice",registration(race.identity));
+    let started, release;
+    const waiting = new Promise(resolve => {started = resolve;});
+    const held = new Promise(resolve => {release = resolve;});
+    const pending = subscribe(sa,"alice",subscription(race.identity.id),async (_url,init) => {
+      started(); await held; return echo(_url,init);
+    });
+    await waiting;
+    await sa.unregister("alice",race.identity.id);
+    release();
+    await assert.rejects(() => pending,e => e.code === "not_found");
+    await sa.notify(race.identity.id);
+    noRelatedState(race.identity.id);
+
+    // A remote confirmation may also finish after deletion, without recreating local state.
+    const late = await initialize("Unregister during confirmation",ORIGIN_A), remote = await initialize("Remote late",ORIGIN_B);
+    await sa.register("alice",registration(late.identity));
+    await sb.register("bob",registration(remote.identity));
+    const inviteLate = await invite(late);
+    await execute(sa,"alice",inviteLate.request);
+    await execute(sb,"bob",await accept(remote,inviteLate.invitation));
+    const confirmLate = (await ingest(late,await sync(sa,"alice",late))).actions[0];
+    let sent, finish;
+    const sentPromise = new Promise(resolve => {sent = resolve;});
+    const finishPromise = new Promise(resolve => {finish = resolve;});
+    sa.fetcher = async (url,init) => {sent();await finishPromise;return transport(url,init);};
+    const confirming = execute(sa,"alice",confirmLate);
+    await sentPromise;
+    await sa.unregister("alice",late.identity.id);
+    finish();
+    await assert.rejects(() => confirming,e => e.code === "closed");
+    noRelatedState(late.identity.id);
+  } finally {da.db.close();db.db.close();}
+});

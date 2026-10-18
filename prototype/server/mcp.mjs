@@ -1,3 +1,4 @@
+import { manageUpdates } from "./updates.mjs";
 import { LinkError, diagnostic } from "./errors.mjs";
 import { Service, operations } from "./service.mjs";
 import { eventDefinition, subscribe, unsubscribe, drain } from "./events.mjs";
@@ -27,6 +28,18 @@ const tools = [
       additionalProperties: false,
     },
     annotations: { readOnlyHint: false, idempotentHint: true },
+  },
+  {
+    name: "link_updates",
+    description: "Enable, disable, check or inspect software update notifications for an owned endpoint. Enabling shares only this public Site origin with the fixed Dot Link update publisher. The automatic flag records the owner's explicit standing authorization for their agent to apply future releases; the transport itself never executes code.",
+    inputSchema: {type:"object",properties:{peer_id:{type:"string"},action:{type:"string",enum:["enable","disable","status","check"]},automatic:{type:"boolean"}},required:["peer_id","action"],additionalProperties:false},
+    annotations: {readOnlyHint:false,idempotentHint:true},
+  },
+  {
+    name: "link_unregister",
+    description: "Delete this user's endpoint registration and its related data on this Site, including subscriptions, contacts, invitations and stored ciphertext. Requires the owner's explicit deletion request. Does not delete endpoint private keys, remote copies, the Site or the Plugin.",
+    inputSchema: {type:"object",properties:{peer_id:{type:"string"}},required:["peer_id"],additionalProperties:false},
+    annotations: {readOnlyHint:false,destructiveHint:true,idempotentHint:true},
   },
   {
     name: "link_exchange",
@@ -98,6 +111,8 @@ export async function handleMcp(request, db, ctx, options = {}) {
     if (rpc.method === "tools/call") {
       const a = p.arguments || {};
       if (p.name === "link_account") {stage = "mcp.account"; answer = await service.account(owner);}
+      else if (p.name === "link_updates") {stage = "mcp.updates"; answer = await manageUpdates(service,owner,a);}
+      else if (p.name === "link_unregister") {stage = "mcp.unregister"; answer = await service.unregister(owner,a.peer_id);}
       else if (p.name === "link_register") {stage = "mcp.register"; answer = await service.register(owner,a);}
       else if (p.name === "link_exchange") {stage = "mcp.exchange"; answer = await service.call(owner,a.operation,a.input);}
       else throw new LinkError("invalid_operation","Unknown tool");

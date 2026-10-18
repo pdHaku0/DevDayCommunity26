@@ -29,6 +29,13 @@
       "when": 1792305793870,
       "tag": "0003_chief_serpent_society",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1792307077229,
+      "tag": "0004_clear_gauntlet",
+      "breakpoints": true
     }
   ]
 }

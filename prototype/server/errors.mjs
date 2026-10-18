@@ -10,9 +10,9 @@ const codes = new Set([
   "callback_timeout", "callback_network", "callback_redirect", "callback_http_error",
   "callback_no_echo", "callback_invalid_response", "callback_response_too_large",
 ]);
-const stages = new Set(["mcp.request", "mcp.auth", "mcp.account", "mcp.register", "mcp.exchange",
+const stages = new Set(["mcp.request", "mcp.auth", "mcp.account", "mcp.register", "mcp.unregister", "mcp.updates", "mcp.exchange",
   "mcp.events", "mcp.skills", "federation.request", "federation.receive", "federation.transport",
-  "events.verify", "events.delivery"]);
+  "events.verify", "events.delivery", "updates.request", "updates.transport", "updates.delivery"]);
 export class LinkError extends Error {
   constructor(code, message, meta = {}) {
     super(message);

@@ -17,7 +17,7 @@ if (!insideSource || (!insideSource.startsWith('..' + '/') && insideSource !== '
 // dependency trees and runtime state. New implementation files within these
 // areas must be ordinary source files; symlinks are never followed.
 const roots = [
-  '.gitignore', 'README.md', 'package.json', 'package-lock.json',
+  '.gitignore', 'README.md', 'AUTO_UPDATE.md', 'package.json', 'package-lock.json', 'release.json',
   'cloudflare-env.d.ts', 'drizzle.config.ts', 'eslint.config.mjs',
   'next.config.ts', 'postcss.config.mjs', 'tsconfig.json', 'vite.config.ts',
   'app', 'build', 'db', 'drizzle', 'lib', 'server', 'tests', 'client/probe.mjs',
