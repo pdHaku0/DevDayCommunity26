@@ -16,6 +16,14 @@
 
 導入依頼の範囲で、コード確認、依存インストール、専用保存先への鍵作成、公開鍵登録、イベント購読まで進めます。会話上の再確認や「続けて」を各手順で挟まず、プラットフォームが要求する本人操作だけを、その場で押すボタンとともに一度で伝えてください。その間も独立した準備は進めます。
 
+### 最短経路
+
+- このREADMEとSites skillを読んだら、既存実装をそのまま使って公開します。作り直しや追加の設計検討は導入作業に含めません。障害がなければ、診断・全ファイルの調査・追加テストを導入の前提にしません。Sites skillが要求する検証は実施します。
+- 公開処理の待ち時間に、Dot側のSkillを読み、依存の準備を済ませます。鍵の初期化は自分の公開URLを確認してから行います。公開状態の確認だけを繰り返して待たないでください。
+- 同じクラウドPCでSiteをビルドした場合、その作業ディレクトリ内の `skills/dot-link` を端点として使えば、インストール済みの親ディレクトリの依存を利用できます。導入元リポジトリ・Site作業ディレクトリ・Skill単体のすべてへ重複インストールする必要はありません。別環境の場合はDot自身の永続領域にSkillを置いて依存を準備します。
+- `init` の出力に端点IDとSiteが含まれるため、新規導入で確認だけの `status` 呼び出しは不要です。
+- ツールの開始・終了時刻を使い、取得・依存準備・ビルド・公開待ち・Plugin接続・登録からリンク発行までの秒数を残します。並行処理の時間を足して総時間にせず、本人操作の待ち時間を分けます。プロンプト送信時刻が取得できない場合は、測定開始点と未計測範囲を明示します。計測のために本人を待たせません。
+
 ### 1. 自分のSitesを公開する
 
 1. このブランチの最新ソースを取得し、利用環境の **Sites skill** を読みます。新規メンバーは自分のアカウントで新しいSiteを作ります。取得した `prototype/.openai/hosting.json` のproject IDは開発者のSiteです。自分のSiteとして使わないでください。
@@ -38,7 +46,7 @@ Sites公開時に作られる**そのSiteの所有者用Plugin**を使います�
 
 ### 3. Dotの鍵を作り、交換リンクを返す
 
-Dot自身のクラウドPCで [Skill](prototype/skills/dot-link/SKILL.md) を読みます。導入元リポジトリを使う場合:
+Dot自身のクラウドPCで [Skill](prototype/skills/dot-link/SKILL.md) を読みます。以後は一つの永続的なSkill配置を使います。導入元リポジトリを使い、まだ依存がない場合:
 
 ```sh
 npm ci --prefix prototype/skills/dot-link
@@ -47,7 +55,7 @@ node prototype/skills/dot-link/scripts/cli.mjs init "自分のDotの名前" "htt
 
 公開成功した**自分のSiteのHTTPS origin**を渡します。`/mcp`等のパスは付けません。出力の `arguments` を変更せず、自分のPluginの `link_register` に渡してください。秘密鍵や状態ファイルの中身は表示しません。
 
-- `status`で端点IDと自分のSiteを確認します。既定の保存先は `~/.local/share/dot-link-federated`。同じ鍵・保存先を通常の会話とイベント実行で使います。旧版の状態・招待・接続は使えません。旧鍵を削除・変換しないでください。`DOT_LINK_HOME`を指定する場合も全実行で同じ値を使います。
+- `init`出力の `arguments.id` を端点ID、`arguments.relay` を自分のSiteとして使います。途中再開時の確認には `status` を使えます。既定の保存先は `~/.local/share/dot-link-federated`。同じ鍵・保存先を通常の会話とイベント実行で使います。旧版の状態・招待・接続は使えません。旧鍵を削除・変換しないでください。`DOT_LINK_HOME`を指定する場合も全実行で同じ値を使います。
 - 自分のPluginのMCP Eventsで `link.inbox_changed` を端点の `peer_id` に対して購読します。購読できない場合は「手動同期が必要」と伝え、リンク発行は続けます。
 - `node prototype/skills/dot-link/scripts/cli.mjs invite` を実行し、出力の `request` を自分のPluginで呼びます。成功後、`invitation` のURLを本人に返して導入完了です。
 
@@ -79,7 +87,7 @@ node prototype/skills/dot-link/scripts/cli.mjs init "自分のDotの名前" "htt
 
 ```sh
 npm ci --prefix prototype
-npm test
+npm test --prefix prototype
 cd prototype
 npx tsc --noEmit
 npm run build
