@@ -58,6 +58,12 @@ async function database() {
 }
 const execute = (service, owner, request) =>
   service.call(owner, request.arguments.operation, request.arguments.input);
+const networkFailure = (error) => {
+  assert.equal(error.code, "delivery_network");
+  assert.equal(error.meta.stage, "federation.transport");
+  assert.equal(error.meta.retryable, true);
+  return true;
+};
 
 
 test("endpoint cryptography rejects altered ciphertext, identity, expiry and invitation relay", async () => {
@@ -84,7 +90,7 @@ test("independent Sites pair and exchange E2EE durably; retries, owner isolation
   const transport = async (url, init) => {
     const target = new URL(url);
     assert.equal(target.pathname, "/api/federation");
-    assert.equal(init.redirect, "error");
+    assert.equal(init.redirect, "manual");
     assert.equal(new Headers(init.headers).has("authorization"), false);
     const adapter = databases.get(target.origin);
     assert.ok(adapter, "Only the explicitly pinned destination is contacted");
@@ -123,7 +129,7 @@ test("independent Sites pair and exchange E2EE durably; retries, owner isolation
     await execute(sa, "alice", invitation.request);
     const accepting = await accept(b, invitation.invitation);
     loseNextKind = "accept";
-    await assert.rejects(() => execute(sb, "bob", accepting));
+    await assert.rejects(() => execute(sb, "bob", accepting), networkFailure);
     assert.deepEqual(await retry(b, accepting.arguments.input.packet.id), accepting);
     await execute(sb, "bob", accepting);
     await assert.rejects(() => execute(sb, "eve", accepting));
@@ -141,7 +147,7 @@ test("independent Sites pair and exchange E2EE durably; retries, owner isolation
     const confirming = accepted.actions.find((r) => r.arguments.input.packet?.kind === "confirm");
     assert.ok(confirming);
     loseNextKind = "confirm";
-    await assert.rejects(() => execute(sa, "alice", confirming));
+    await assert.rejects(() => execute(sa, "alice", confirming), networkFailure);
     await execute(sa, "alice", await retry(a, confirming.arguments.input.packet.id));
     await runActions(sa, "alice", await ingest(a, await sync(sa, "alice", a)));
     await runActions(sb, "bob", await ingest(b, await sync(sb, "bob", b)));
@@ -158,7 +164,7 @@ test("independent Sites pair and exchange E2EE durably; retries, owner isolation
     const moved = await makePacket({ ...a.identity, relay: ORIGIN_B }, b.identity, "message", packet.body);
     assert.equal((await receive(ORIGIN_B, moved)).ok, false);
     loseNextKind = "message";
-    await assert.rejects(() => execute(sa, "alice", outbound));
+    await assert.rejects(() => execute(sa, "alice", outbound), networkFailure);
     await execute(sa, "alice", await retry(a, packet.id));
     const bobIncoming = await sync(sb, "bob", b);
     assert.equal(bobIncoming.messages.length, 1);
@@ -189,7 +195,7 @@ test("independent Sites pair and exchange E2EE durably; retries, owner isolation
 
     const closed = await disconnect(b, a.identity.id);
     loseNextKind = "disconnect";
-    await assert.rejects(() => execute(sb, "bob", closed));
+    await assert.rejects(() => execute(sb, "bob", closed), networkFailure);
     await execute(sb, "bob", await retry(b, closed.arguments.input.packet.id));
     await assert.rejects(() => execute(sa, "alice", outbound));
     assert.equal((await receive(ORIGIN_B, packet)).ok, false);
@@ -206,6 +212,56 @@ test("independent Sites pair and exchange E2EE durably; retries, owner isolation
     assert.equal((await sync(sb, "bob", b)).messages.length, 1);
     assert.equal((await receive(ORIGIN_B, confirming.arguments.input.packet)).ok, false, "Old confirmation cannot attach to the new connection");
   } finally { da.db.close(); db.db.close(); }
+});
+
+test("MCP diagnostics separate transport failures without reflecting remote bodies or secrets", async (t) => {
+  const { db, adapter } = await database();
+  const a = await initialize("Alice", ORIGIN_A), b = await initialize("Bob", ORIGIN_B);
+  const accepting = await accept(b, (await invite(a)).invitation);
+  await new Service(adapter, { origin: ORIGIN_B }).register("bob", registration(b.identity));
+  const secret = a.identity.signSecret, sentinel = "REMOTE_PRIVATE_SENTINEL", logs = [];
+  t.mock.method(console, "warn", (line) => logs.push(line));
+  const remoteRequestId = crypto.randomUUID();
+  const cases = [
+    [403, () => Response.json({ ok: false, error: { code: "not_connected", message: sentinel + secret, request_id: remoteRequestId } }, { status: 403 }), "delivery_http_error", false],
+    [503, () => Response.json({ ok: false, error: { code: secret, message: sentinel, request_id: secret } }, { status: 503 }), "delivery_remote_unavailable", true],
+    [200, () => new Response(sentinel + secret), "delivery_invalid_response", true],
+    [200, () => new Response((sentinel + secret).repeat(200)), "delivery_response_too_large", true],
+    [302, () => new Response(sentinel + secret, { status: 302, headers: { location: "https://outside.example/" } }), "delivery_redirect", false],
+  ];
+  const requestIds = new Set();
+  try {
+    for (const [status, respond, code, retryable] of cases) {
+      let fetches = 0;
+      const response = await handleMcp(new Request(ORIGIN_B + "/mcp", {
+        method: "POST", headers: { "content-type": "application/json", "oai-authenticated-user-id": "bob" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "link_exchange", arguments: accepting.arguments } }),
+      }), adapter, undefined, { fetcher: async () => { fetches++; return respond(); } });
+      const rpc = await response.json();
+      assert.equal(rpc.result.isError, true);
+      const body = JSON.parse(rpc.result.content[0].text), error = body.error;
+      assert.deepEqual(rpc.result.structuredContent, body);
+      assert.equal(error.code, code);
+      assert.equal(error.stage, "federation.transport");
+      assert.equal(error.retryable, retryable);
+      assert.equal(error.remote_status, status);
+      assert.match(error.request_id, /^[0-9a-f-]{36}$/i);
+      requestIds.add(error.request_id);
+      assert.equal(fetches, 1, "A redirect must never be followed");
+      if (status === 403) {
+        assert.equal(error.remote_code, "not_connected");
+        assert.equal(error.remote_request_id, remoteRequestId);
+      } else {
+        assert.equal(error.remote_code, undefined);
+        assert.equal(error.remote_request_id, undefined);
+      }
+      const exposed = JSON.stringify([rpc, logs]);
+      assert.ok(!exposed.includes(sentinel));
+      assert.ok(!exposed.includes(secret));
+      assert.ok(logs.some(line => JSON.parse(line).request_id === error.request_id));
+    }
+    assert.equal(requestIds.size, cases.length);
+  } finally { db.close(); }
 });
 
 test("event subscription binds ownership, verifies callback, signs notifications, and keeps retry identity", async () => {

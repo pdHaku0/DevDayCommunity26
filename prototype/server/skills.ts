@@ -1,4 +1,6 @@
 import skill from "../skills/dot-link/SKILL.md?raw";
+import safeErrors from "../skills/dot-link/scripts/safe-errors.mjs?raw";
+import doctor from "../skills/dot-link/scripts/doctor.mjs?raw";
 import cli from "../skills/dot-link/scripts/cli.mjs?raw";
 import state from "../skills/dot-link/scripts/state.mjs?raw";
 import cryptography from "../skills/dot-link/scripts/crypto.mjs?raw";
@@ -9,6 +11,8 @@ const root = "skill://dot-link/dot-link/";
 const files: Record<string, string> = {
   "SKILL.md": skill,
   "scripts/cli.mjs": cli,
+  "scripts/doctor.mjs": doctor,
+  "scripts/safe-errors.mjs": safeErrors,
   "scripts/state.mjs": state,
   "scripts/crypto.mjs": cryptography,
   "scripts/protocol.mjs": protocol,

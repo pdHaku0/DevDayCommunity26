@@ -1,3 +1,4 @@
+import { LinkError, diagnostic, responseJson, transportFailure } from "./errors.mjs";
 import { digest, encode } from "../skills/dot-link/scripts/protocol.mjs";
 import { requireThat } from "./service.mjs";
 export const eventName = "link.inbox_changed";
@@ -75,7 +76,7 @@ async function signedPost(subscription, event, fetcher = fetch) {
   const base64 = btoa(String.fromCharCode(...new Uint8Array(signature)));
   return fetcher(url, {
     method: "POST",
-    redirect: "error",
+    redirect: "manual",
     signal: AbortSignal.timeout(8000),
     headers: {
       "Content-Type": "application/json",
@@ -112,15 +113,21 @@ export async function subscribe(service, owner, p, fetcher = fetch) {
       { type: "verification", challenge },
       fetcher,
     );
-  } catch {
-    requireThat(false, "callback_failed", "Callback verification failed");
+  } catch (error) {
+    throw transportFailure(error, "events.verify", "callback");
   }
-  const body = await response.json().catch(() => null);
-  requireThat(
-    response.ok && body?.challenge === challenge,
-    "callback_failed",
-    "Callback challenge failed",
-  );
+  if (!response.ok) {
+    await response.body?.cancel();
+    const redirect = response.status >= 300 && response.status < 400;
+    throw new LinkError(redirect ? "callback_redirect" : "callback_http_error", "Event callback verification returned an HTTP error", {
+      stage:"events.verify",retryable:response.status === 408 || response.status === 429 || response.status >= 500,remote_status:response.status,
+    });
+  }
+  let body;
+  try {body = await responseJson(response,{stage:"events.verify",prefix:"callback"});}
+  catch (error) {throw transportFailure(error,"events.verify","callback");}
+  if (body?.challenge !== challenge)
+    throw new LinkError("callback_no_echo", "Event callback did not echo the verification challenge", {stage:"events.verify",retryable:false,remote_status:response.status});
   requireThat(
     p.ttlMs === undefined ||
       p.ttlMs === null ||
@@ -187,7 +194,7 @@ export async function dispatch(service, fetcher = fetch) {
   );
   await Promise.all(
     jobs.map(async (job) => {
-      let status = 0;
+      let status = 0, failure;
       try {
         const r = await signedPost(
           { ...job, id: job.subscription },
@@ -202,11 +209,15 @@ export async function dispatch(service, fetcher = fetch) {
         );
         status = r.status;
         await r.body?.cancel();
-      } catch {}
+      } catch (error) {failure = transportFailure(error,"events.delivery","callback");}
       if (status >= 200 && status < 300) {
         await service.run("DELETE FROM f_deliveries WHERE id=?", job.id);
         return;
       }
+      failure ||= new LinkError(status >= 300 && status < 400 ? "callback_redirect" : "callback_http_error", "Event delivery returned an HTTP error", {
+        stage:"events.delivery",retryable:status === 408 || status === 429 || status >= 500,remote_status:status,
+      });
+      diagnostic(failure,service.requestId,"events.delivery",status || 502);
       if (status === 410) {
         await service.db.batch([
           service.q(

@@ -1,3 +1,4 @@
+import { LinkError, remoteMetadata, responseJson, transportFailure } from "./errors.mjs";
 import { z } from "zod";
 import {
   checkIdentity, identityBytes, verify, publicIdentity, checkPacket, packetBytes,
@@ -15,9 +16,7 @@ const schemas = {
   ack: z.object({ peer_id: id, message_ids: z.array(z.string().max(64)).max(50) }).strict(),
 };
 export const operations = Object.keys(schemas);
-export class LinkError extends Error {
-  constructor(code, message) { super(message); this.code = code; }
-}
+export { LinkError } from "./errors.mjs";
 export function requireThat(value, code, message) {
   if (!value) throw new LinkError(code, message);
 }
@@ -25,8 +24,9 @@ function same(a, b) {
   return JSON.stringify(publicIdentity(a)) === JSON.stringify(publicIdentity(b));
 }
 export class Service {
-  constructor(db, { origin, fetcher = fetch, now = () => Date.now() } = {}) {
+  constructor(db, { origin, fetcher = fetch, now = () => Date.now(), requestId = crypto.randomUUID() } = {}) {
     this.db = db;
+    this.requestId = requestId;
     this.origin = validateRelay(origin);
     this.fetcher = fetcher;
     this.now = now;
@@ -114,29 +114,38 @@ export class Service {
     ]);
   }
   async forward(packet) {
-    const relay = validateRelay(packet.to.relay);
+    const relay = validateRelay(packet.to.relay), stage = "federation.transport";
+    const signal = AbortSignal.timeout(8000);
     let response;
     try {
       response = await this.fetcher(relay + "/api/federation", {
-        method: "POST", redirect: "error", signal: AbortSignal.timeout(8000),
+        method: "POST", redirect: "manual", signal,
         headers: { "Content-Type": "application/json" }, body: JSON.stringify(packet),
       });
-      const reader = response.body?.getReader();
-      if (!reader) throw new Error();
-      const chunks = []; let length = 0;
-      for (;;) {
-        const {value, done} = await reader.read(); if (done) break;
-        length += value.length;
-        if (length > 8192) { await reader.cancel(); throw new Error(); }
-        chunks.push(value);
+      const status = response.status;
+      if (status >= 300 && status < 400) {
+        await response.body?.cancel();
+        throw new LinkError("delivery_redirect", "Delivery was not confirmed: redirects are not followed", {stage,retryable:false,remote_status:status});
       }
-      const bytes = new Uint8Array(length); let offset = 0;
-      for (const part of chunks) { bytes.set(part, offset); offset += part.length; }
-      const result = JSON.parse(new TextDecoder().decode(bytes));
-      if (!response.ok || result.ok !== true) throw new Error();
-      return result;
-    } catch {
-      throw new LinkError("delivery_failed", "Delivery was not confirmed; retry the original packet");
+      let result;
+      try { result = await responseJson(response, {stage,prefix:"delivery"}); }
+      catch (error) { if (response.ok) throw error; }
+      const meta = remoteMetadata(result, status);
+      if (!response.ok) {
+        const code = status === 429 ? "delivery_rate_limited" : status >= 500 ? "delivery_remote_unavailable" : "delivery_http_error";
+        throw new LinkError(code, "Delivery was not confirmed: the remote server returned an HTTP error", {stage,retryable:status === 408 || status === 429 || status >= 500,...meta});
+      }
+      if (!result || typeof result !== "object" || Array.isArray(result) || typeof result.ok !== "boolean")
+        throw new LinkError("delivery_invalid_response", "Delivery was not confirmed: invalid response format", {stage,retryable:true,...meta});
+      if (!result.ok)
+        throw new LinkError("delivery_remote_rejected", "Delivery was not confirmed: the remote server did not accept the packet", {stage,retryable:meta.remote_code === "limit",...meta});
+      const safe = {ok:true};
+      for (const key of ["connected", "pending", "disconnected", "stored", "duplicate"])
+        if (typeof result[key] === "boolean") safe[key] = result[key];
+      if (result.id === packet.body.envelope?.id) safe.id = result.id;
+      return safe;
+    } catch (error) {
+      throw transportFailure(error, stage, "delivery", signal);
     }
   }
   async dispatch(owner, packet) {
