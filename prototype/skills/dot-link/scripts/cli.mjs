@@ -1,6 +1,5 @@
-import { readFile } from "node:fs/promises";
 import { registration } from "./crypto.mjs";
-import { publicIdentity } from "./protocol.mjs";
+import { publicIdentity, validateRelay } from "./protocol.mjs";
 import {
   transact,
   initialize,
@@ -10,6 +9,8 @@ import {
   send,
   inbox,
   call,
+  retry,
+  disconnect,
 } from "./state.mjs";
 const [command, ...args] = process.argv.slice(2);
 const input = async () => {
@@ -26,16 +27,11 @@ try {
   const stdin = ["ingest", "send"].includes(command) ? await input() : null;
   const result = await transact(async (state) => {
     if (command === "init") {
-      const relay =
-        args[1] ||
-        JSON.parse(
-          await readFile(new URL("../relay.json", import.meta.url), "utf8"),
-        ).origin;
-      if (!state) state = await initialize(args[0] || "My dot", relay);
-      else if (state.relay !== new URL(relay).origin)
-        throw new Error(
-          "State belongs to another relay; use a separate DOT_LINK_HOME",
-        );
+      if (!args[0] || !args[1]) throw new Error("Usage: init LABEL OWN_SITE_URL");
+      const relay = validateRelay(args[1]);
+      if (!state) state = await initialize(args[0], relay);
+      else if (state.identity.relay !== relay)
+        throw new Error("State belongs to another site; use a separate DOT_LINK_HOME");
       return {
         state,
         output: {
@@ -50,7 +46,7 @@ try {
       case "status":
         output = {
           identity: publicIdentity(state.identity),
-          relay: state.relay,
+          relay: state.identity.relay,
           contacts: Object.values(state.peers),
           unread: Object.values(state.inbox).filter((m) => !m.read).length,
         };
@@ -70,12 +66,9 @@ try {
       case "send":
         output = await send(state, args[0], JSON.parse(stdin));
         break;
-      case "retry": {
-        const envelope = state.outbox[args[0]];
-        if (!envelope) throw new Error("Unknown outgoing message");
-        output = call("send", { envelope });
+      case "retry":
+        output = await retry(state, args[0]);
         break;
-      }
       case "inbox":
         output = await inbox(state);
         break;
@@ -85,18 +78,12 @@ try {
         output = { read: true };
         break;
       }
-      case "disconnect": {
-        if (!state.peers[args[0]]) throw new Error("Unknown contact");
-        state.peers[args[0]].active = false;
-        output = call("disconnect", {
-          peer_id: state.identity.id,
-          other: args[0],
-        });
+      case "disconnect":
+        output = await disconnect(state, args[0]);
         break;
-      }
       default:
         throw new Error(
-          "Commands: init [label] [relay], status, invite, accept URL, sync, ingest < result.json, send PEER < body.json, retry ID, inbox, read ID, disconnect PEER",
+          "Commands: init LABEL OWN_SITE_URL, status, invite, accept URL, sync, ingest < result.json, send PEER < body.json, retry PACKET_ID, inbox, read ID, disconnect PEER",
         );
     }
     return { state, output };

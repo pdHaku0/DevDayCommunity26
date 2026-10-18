@@ -130,7 +130,7 @@ export async function subscribe(service, owner, p, fetcher = fetch) {
   );
   const expires = service.now() + Math.min(p.ttlMs ?? 86400000, 86400000);
   await service.run(
-    "INSERT INTO subscriptions(id,owner,peer,url,secret,expires) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET secret=excluded.secret,expires=excluded.expires",
+    "INSERT INTO f_subscriptions(id,owner,peer,url,secret,expires) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET secret=excluded.secret,expires=excluded.expires",
     id,
     owner,
     subscription.peer,
@@ -140,21 +140,16 @@ export async function subscribe(service, owner, p, fetcher = fetch) {
   );
   // A fresh subscription also signals mail already waiting; events are hints, sync is authoritative.
   const pending = await service.one(
-    "SELECT id FROM messages WHERE recipient=? AND envelope IS NOT NULL AND expires>? LIMIT 1",
+    "SELECT id FROM f_messages WHERE recipient=? AND envelope IS NOT NULL AND expires>? LIMIT 1",
     subscription.peer,
     service.now(),
   );
   const invitation = await service.one(
-    "SELECT id FROM invites WHERE inviter=? AND receipt IS NOT NULL AND confirmed=0 AND expires>? LIMIT 1",
+    "SELECT id FROM f_invites WHERE inviter=? AND receipt IS NOT NULL AND confirmed=0 AND expires>? LIMIT 1",
     subscription.peer,
     service.now(),
   );
-  const connection = await service.one(
-    "SELECT id FROM connection_requests WHERE peer=? AND status='queued' AND expires>? LIMIT 1",
-    subscription.peer,
-    service.now(),
-  );
-  if (pending || invitation || connection)
+  if (pending || invitation)
     await service.notify(subscription.peer);
   return {
     id,
@@ -179,14 +174,14 @@ export async function unsubscribe(service, owner, p) {
     ]),
   );
   await service.db.batch([
-    service.q("DELETE FROM deliveries WHERE subscription=?", id),
-    service.q("DELETE FROM subscriptions WHERE id=? AND owner=?", id, owner),
+    service.q("DELETE FROM f_deliveries WHERE subscription=?", id),
+    service.q("DELETE FROM f_subscriptions WHERE id=? AND owner=?", id, owner),
   ]);
   return {};
 }
 export async function dispatch(service, fetcher = fetch) {
   const jobs = await service.all(
-    "SELECT d.*,s.url,s.secret,s.expires FROM deliveries d JOIN subscriptions s ON s.id=d.subscription WHERE d.status='pending' AND d.next<=? AND s.expires>? ORDER BY d.occurred LIMIT 8",
+    "SELECT d.*,s.url,s.secret,s.expires FROM f_deliveries d JOIN f_subscriptions s ON s.id=d.subscription WHERE d.status='pending' AND d.next<=? AND s.expires>? ORDER BY d.occurred LIMIT 8",
     service.now(),
     service.now(),
   );
@@ -209,22 +204,22 @@ export async function dispatch(service, fetcher = fetch) {
         await r.body?.cancel();
       } catch {}
       if (status >= 200 && status < 300) {
-        await service.run("DELETE FROM deliveries WHERE id=?", job.id);
+        await service.run("DELETE FROM f_deliveries WHERE id=?", job.id);
         return;
       }
       if (status === 410) {
         await service.db.batch([
           service.q(
-            "DELETE FROM deliveries WHERE subscription=?",
+            "DELETE FROM f_deliveries WHERE subscription=?",
             job.subscription,
           ),
-          service.q("DELETE FROM subscriptions WHERE id=?", job.subscription),
+          service.q("DELETE FROM f_subscriptions WHERE id=?", job.subscription),
         ]);
         return;
       }
       const attempts = job.attempts + 1;
       await service.run(
-        "UPDATE deliveries SET attempts=?,next=?,status=? WHERE id=?",
+        "UPDATE f_deliveries SET attempts=?,next=?,status=? WHERE id=?",
         attempts,
         service.now() + Math.min(3600000, 1000 * 2 ** attempts),
         status === 413 || attempts >= 6 ? "failed" : "pending",
@@ -238,7 +233,7 @@ export async function drain(service, fetcher = fetch) {
     if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
     await dispatch(service, fetcher);
     const remaining = await service.one(
-      "SELECT id FROM deliveries WHERE status='pending' LIMIT 1",
+      "SELECT id FROM f_deliveries WHERE status='pending' LIMIT 1",
     );
     if (!remaining) break;
   }

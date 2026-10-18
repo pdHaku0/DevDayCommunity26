@@ -15,6 +15,20 @@
       "when": 1792304495046,
       "tag": "0001_uneven_stellaris",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1792305747334,
+      "tag": "0002_curly_queen_noir",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1792305793870,
+      "tag": "0003_chief_serpent_society",
+      "breakpoints": true
     }
   ]
 }

@@ -4,40 +4,16 @@ import { DatabaseSync } from "node:sqlite";
 import { readFile, readdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
-import {
-  createIdentity,
-  registration,
-  seal,
-  open as decrypt,
-  sealConnectRequest,
-} from "../skills/dot-link/scripts/crypto.mjs";
-import {
-  initialize,
-  invite,
-  accept,
-  ingest,
-  send,
-  inbox,
-  transact,
-} from "../skills/dot-link/scripts/state.mjs";
+import { createIdentity, registration, seal, open as decrypt, makePacket, sign } from "../skills/dot-link/scripts/crypto.mjs";
+import { initialize, invite, accept, ingest, send, inbox, transact, disconnect, retry } from "../skills/dot-link/scripts/state.mjs";
 import { Service } from "../server/service.mjs";
-import {
-  subscribe,
-  unsubscribe,
-  dispatch,
-  validateCallback,
-  eventName,
-} from "../server/events.mjs";
+import { subscribe, unsubscribe, dispatch, validateCallback, eventName } from "../server/events.mjs";
 import { handleMcp } from "../server/mcp.mjs";
-import { handleConnect } from "../server/web.mjs";
-import {
-  digest,
-  encode,
-  readInvitation,
-} from "../skills/dot-link/scripts/protocol.mjs";
+import { handleFederation } from "../server/federation.mjs";
+import { publicIdentity, readInvitation, validateRelay, envelopeBytes } from "../skills/dot-link/scripts/protocol.mjs";
 
+const ORIGIN_A = "https://a.test.chatgpt.site";
+const ORIGIN_B = "https://b.test.chatgpt.site";
 async function database() {
   const db = new DatabaseSync(":memory:");
   for (const f of (
@@ -83,225 +59,160 @@ async function database() {
 const execute = (service, owner, request) =>
   service.call(owner, request.arguments.operation, request.arguments.input);
 
-test("only the recipient decrypts; changes to ciphertext, sender, recipient, or time are rejected", async () => {
-  const a = await createIdentity("A"),
-    b = await createIdentity("B"),
-    c = await createIdentity("C");
+
+test("endpoint cryptography rejects altered ciphertext, identity, expiry and invitation relay", async () => {
+  const a = await createIdentity("A", ORIGIN_A), b = await createIdentity("B", ORIGIN_B), c = await createIdentity("C", ORIGIN_B);
   const message = await seal(a, b, { text: "秘密の内容" });
   assert.deepEqual(await decrypt(b, a, message), { text: "秘密の内容" });
   await assert.rejects(() => decrypt(c, a, message));
   for (const patch of [
-    {
-      ciphertext:
-        (message.ciphertext[0] === "A" ? "B" : "A") +
-        message.ciphertext.slice(1),
-    },
-    { from: c.id },
-    { to: c.id },
-    { expires: message.expires + 1 },
-  ])
-    await assert.rejects(() => decrypt(b, a, { ...message, ...patch }));
+    { ciphertext: (message.ciphertext[0] === "A" ? "B" : "A") + message.ciphertext.slice(1) },
+    { from: c.id }, { to: c.id }, { expires: message.expires + 1 },
+  ]) await assert.rejects(() => decrypt(b, a, { ...message, ...patch }));
   await assert.rejects(() => decrypt(b, a, message, message.expires + 1));
+  const state = await initialize("A", ORIGIN_A), issued = await invite(state);
+  await readInvitation(issued.invitation);
+  await assert.rejects(() => readInvitation(issued.invitation.replace(ORIGIN_A, ORIGIN_B)));
+  for (const url of ["http://a.test.chatgpt.site", "https://chatgpt.site.evil.test", "https://a.test.chatgpt.site/path", "https://a.test.chatgpt.site:444", "https://user@a.test.chatgpt.site"])
+    assert.throws(() => validateRelay(url));
 });
 
-test("two authenticated peers pair, persist verified ciphertext, acknowledge once, and reject cross-account access", async () => {
-  const { db, adapter } = await database(),
-    s = new Service(adapter),
-    relay = "https://example.chatgpt.site";
-  const a = await initialize("Alice", relay),
-    b = await initialize("Bob", relay),
-    c = await initialize("Eve", relay);
+test("independent Sites pair and exchange E2EE durably; retries, owner isolation and revocation preserve trust", async () => {
+  const da = await database(), db = await database();
+  const databases = new Map([[ORIGIN_A, da.adapter], [ORIGIN_B, db.adapter]]);
+  let loseNextKind;
+  const transport = async (url, init) => {
+    const target = new URL(url);
+    assert.equal(target.pathname, "/api/federation");
+    assert.equal(init.redirect, "error");
+    assert.equal(new Headers(init.headers).has("authorization"), false);
+    const adapter = databases.get(target.origin);
+    assert.ok(adapter, "Only the explicitly pinned destination is contacted");
+    const response = await handleFederation(new Request(url, init), adapter, undefined, { fetcher: transport });
+    const packet = JSON.parse(init.body);
+    if (loseNextKind === packet.kind && response.ok) {
+      loseNextKind = undefined;
+      throw new Error("Simulated lost response after remote commit");
+    }
+    return response;
+  };
+  const sa = new Service(da.adapter, { origin: ORIGIN_A, fetcher: transport });
+  const sb = new Service(db.adapter, { origin: ORIGIN_B, fetcher: transport });
+  const a = await initialize("Alice", ORIGIN_A), b = await initialize("Bob", ORIGIN_B), c = await initialize("Eve", ORIGIN_B);
+  const sync = (s, owner, state) => s.call(owner, "sync", { peer_id: state.identity.id });
+  const runActions = async (s, owner, result) => {
+    assert.deepEqual(result.errors, []);
+    for (const request of result.actions) await execute(s, owner, request);
+  };
+  const receive = (origin, packet) => handleFederation(new Request(origin + "/api/federation", {
+    method: "POST", headers: { "content-type": "application/json", "oai-authenticated-user-id": "alice" }, body: JSON.stringify(packet),
+  }), databases.get(origin), undefined, { fetcher: transport });
   try {
-    await s.register("alice", registration(a.identity));
-    await s.register("bob", registration(b.identity));
-    await s.register("eve", registration(c.identity));
-    await assert.rejects(() => s.register("eve", registration(a.identity)));
-    await assert.rejects(() =>
-      s.call("eve", "sync", { peer_id: b.identity.id }),
-    );
+    await sa.register("alice", registration(a.identity));
+    await sb.register("bob", registration(b.identity));
+    await sb.register("eve", registration(c.identity));
+    await assert.rejects(() => sa.register("eve", registration(a.identity)));
+    await assert.rejects(() => sb.register("eve", registration(a.identity)));
+    await assert.rejects(() => sb.call("eve", "sync", { peer_id: b.identity.id }));
+    const unauth = await handleMcp(new Request(ORIGIN_A + "/mcp", {
+      method: "POST", body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "link_account" } }),
+    }), da.adapter);
+    assert.equal(unauth.status, 401);
+
     const invitation = await invite(a);
-    await execute(s, "alice", invitation.request);
-    const token = await readInvitation(invitation.invitation, relay);
-    const requestId = await digest(
-      encode(["connect", token.id, b.identity.id]),
-    );
-    const ciphertext = await sealConnectRequest(
-      b.identity,
-      requestId,
-      invitation.invitation,
-    );
-    const request = (owner, origin = relay) =>
-      new Request(relay + "/api/connect", {
-        method: "POST",
-        headers: {
-          "oai-authenticated-user-id": owner,
-          origin,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          peer_id: b.identity.id,
-          request_id: requestId,
-          ciphertext,
-        }),
-      });
-    assert.equal((await handleConnect(request("eve"), adapter)).status, 403);
-    assert.equal(
-      (await handleConnect(request("bob", "https://evil.test"), adapter))
-        .status,
-      403,
-    );
-    const queued = await handleConnect(request("bob"), adapter);
-    assert.equal(queued.status, 200);
-    assert.equal((await queued.json()).status, "queued");
-    assert.equal((await handleConnect(request("bob"), adapter)).status, 200);
-    assert.equal(
-      db.prepare("SELECT count(*) AS n FROM connection_requests").get().n,
-      1,
-    );
-    assert.ok(
-      !JSON.stringify(
-        db.prepare("SELECT * FROM connection_requests").all(),
-      ).includes(token.secret),
-    );
-    await assert.rejects(() =>
-      s.call("bob", "connect.enqueue", { peer_id: b.identity.id }),
-    );
-    const ownerRequest = await ingest(
-      b,
-      await s.call("bob", "sync", { peer_id: b.identity.id }),
-    );
-    assert.deepEqual(ownerRequest.errors, []);
-    for (const action of ownerRequest.actions) await execute(s, "bob", action);
-    assert.equal(
-      (await s.connectionStatus("bob", requestId)).status,
-      "waiting",
-    );
-    assert.equal(
-      db.prepare("SELECT ciphertext FROM connection_requests").get().ciphertext,
-      null,
-    );
-    await assert.rejects(() => s.connectionStatus("eve", requestId));
-    const incoming = await s.call("alice", "sync", { peer_id: a.identity.id });
-    // A forged pairing response has a valid sender key but cannot prove possession of the invitation secret.
+    await execute(sa, "alice", invitation.request);
+    const accepting = await accept(b, invitation.invitation);
+    loseNextKind = "accept";
+    await assert.rejects(() => execute(sb, "bob", accepting));
+    assert.deepEqual(await retry(b, accepting.arguments.input.packet.id), accepting);
+    await execute(sb, "bob", accepting);
+    await assert.rejects(() => execute(sb, "eve", accepting));
+    const incoming = await sync(sa, "alice", a);
+    assert.equal(incoming.invitations.length, 1);
     const forged = structuredClone(incoming);
     forged.invitations[0].receipt = await seal(b.identity, a.identity, {
-      kind: "pair",
-      invite_id: incoming.invitations[0].invite_id,
-      secret: "forged",
-      peer: b.identity,
+      kind: "pair", invite_id: incoming.invitations[0].invite_id, secret: "wrong", peer: publicIdentity(b.identity),
     });
-    assert.equal((await ingest(a, forged)).actions.length, 0);
-    const confirmed = await ingest(a, incoming);
-    assert.equal(confirmed.errors.length, 0);
-    for (const action of confirmed.actions) await execute(s, "alice", action);
-    assert.equal(
-      (await s.connectionStatus("bob", requestId)).status,
-      "connected",
-    );
-    await ingest(a, await s.call("alice", "sync", { peer_id: a.identity.id }));
-    await ingest(b, await s.call("bob", "sync", { peer_id: b.identity.id }));
-    const outbound = await send(a, b.identity.id, {
-      text: "PRIVATE SENTINEL",
-      thread: "example",
+    const rejected = await ingest(a, forged);
+    assert.equal(rejected.actions.length, 0);
+    assert.ok(rejected.errors.length);
+    const accepted = await ingest(a, incoming);
+    assert.deepEqual(accepted.errors, []);
+    const confirming = accepted.actions.find((r) => r.arguments.input.packet?.kind === "confirm");
+    assert.ok(confirming);
+    loseNextKind = "confirm";
+    await assert.rejects(() => execute(sa, "alice", confirming));
+    await execute(sa, "alice", await retry(a, confirming.arguments.input.packet.id));
+    await runActions(sa, "alice", await ingest(a, await sync(sa, "alice", a)));
+    await runActions(sb, "bob", await ingest(b, await sync(sb, "bob", b)));
+
+    const outbound = await send(a, b.identity.id, { text: "PRIVATE SENTINEL" });
+    const packet = outbound.arguments.input.packet;
+    await assert.rejects(() => execute(sa, "eve", outbound));
+    assert.equal((await receive(ORIGIN_B, { ...packet, from: { ...packet.from, relay: ORIGIN_B } })).ok, false);
+    const outsider = await makePacket(c.identity, b.identity, "message", {
+      connection_id: packet.body.connection_id,
+      envelope: await seal(c.identity, b.identity, { kind: "message", connection_id: packet.body.connection_id, body: "intrusion" }),
     });
-    await execute(s, "alice", outbound);
-    assert.equal((await execute(s, "alice", outbound)).duplicate, true);
-    assert.equal(db.prepare("SELECT * FROM messages").all().length, 1);
-    assert.ok(
-      !JSON.stringify(db.prepare("SELECT * FROM messages").all()).includes(
-        "PRIVATE SENTINEL",
-      ),
-    );
-    const dir = await mkdtemp(join(tmpdir(), "dot-link-test-")),
-      prior = process.env.DOT_LINK_HOME;
+    assert.equal((await receive(ORIGIN_B, outsider)).ok, false);
+    const moved = await makePacket({ ...a.identity, relay: ORIGIN_B }, b.identity, "message", packet.body);
+    assert.equal((await receive(ORIGIN_B, moved)).ok, false);
+    loseNextKind = "message";
+    await assert.rejects(() => execute(sa, "alice", outbound));
+    await execute(sa, "alice", await retry(a, packet.id));
+    const bobIncoming = await sync(sb, "bob", b);
+    assert.equal(bobIncoming.messages.length, 1);
+    assert.ok(!JSON.stringify(bobIncoming).includes("PRIVATE SENTINEL"));
+
+    const dir = await mkdtemp(join(tmpdir(), "dot-link-federation-")), prior = process.env.DOT_LINK_HOME;
     process.env.DOT_LINK_HOME = dir;
     try {
-      const response = await s.call("bob", "sync", { peer_id: b.identity.id });
-      const ingested = await transact(async () => ({
-        state: b,
-        output: await ingest(b, response),
-      }));
-      // Before acknowledging, a new client invocation must be able to read the saved message.
-      const restored = await transact(async (state) => ({
-        output: await inbox(state),
-      }));
+      const received = await transact(async () => ({ state: b, output: await ingest(b, bobIncoming) }));
+      const restored = await transact(async (state) => ({ output: await inbox(state) }));
       assert.equal(restored.messages[0].body.text, "PRIVATE SENTINEL");
-      for (const action of ingested.actions) await execute(s, "bob", action);
-      assert.equal(
-        db.prepare("SELECT envelope FROM messages").get().envelope,
-        null,
-      );
-      assert.equal((await execute(s, "alice", outbound)).stored, false);
-      assert.equal(
-        (await s.call("bob", "sync", { peer_id: b.identity.id })).messages
-          .length,
-        0,
-      );
-      // A valid batch can exceed a single-message input limit. Exercise the
-      // actual CLI and its durable state, not only the in-memory receiver.
-      for (let i = 0; i < 4; i++)
-        await execute(
-          s,
-          "alice",
-          await send(a, b.identity.id, "x".repeat(60000)),
-        );
-      const batch = await s.call("bob", "sync", { peer_id: b.identity.id });
-      const received = spawnSync(
-        process.execPath,
-        [
-          fileURLToPath(
-            new URL("../skills/dot-link/scripts/cli.mjs", import.meta.url),
-          ),
-          "ingest",
-        ],
-        { input: JSON.stringify(batch), encoding: "utf8" },
-      );
-      assert.equal(received.status, 0, received.stderr);
-      const result = JSON.parse(received.stdout);
-      assert.deepEqual(result.errors, []);
-      const persisted = await transact(async (state) => ({
-        output: await inbox(state),
-      }));
-      assert.equal(
-        persisted.messages.filter(
-          (m) => typeof m.body === "string" && m.body.length === 60000,
-        ).length,
-        4,
-      );
-      for (const action of result.actions) await execute(s, "bob", action);
+      await runActions(sb, "bob", received);
+      await execute(sa, "alice", outbound);
+      assert.equal((await sync(sb, "bob", b)).messages.length, 0, "Acknowledged ciphertext must never be resurrected by retry");
+      const replacement = await seal(a.identity, b.identity, { kind: "message", connection_id: packet.body.connection_id, body: "replacement" });
+      replacement.id = packet.body.envelope.id;
+      replacement.signature = sign(a.identity, envelopeBytes(replacement));
+      const collision = await makePacket(a.identity, b.identity, "message", { connection_id: packet.body.connection_id, envelope: replacement });
+      assert.equal((await receive(ORIGIN_B, collision)).ok, false, "An acknowledged ID cannot be reused for different signed ciphertext");
     } finally {
-      if (prior === undefined) delete process.env.DOT_LINK_HOME;
-      else process.env.DOT_LINK_HOME = prior;
+      if (prior === undefined) delete process.env.DOT_LINK_HOME; else process.env.DOT_LINK_HOME = prior;
       await rm(dir, { recursive: true, force: true });
     }
-    const unauth = await handleMcp(
-      new Request("https://example/mcp", {
-        method: "POST",
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: 1,
-          method: "tools/call",
-          params: { name: "link_account" },
-        }),
-      }),
-      adapter,
-    );
-    assert.equal(unauth.status, 401);
-    await s.call("bob", "disconnect", {
-      peer_id: b.identity.id,
-      other: a.identity.id,
-    });
-    await assert.rejects(() => execute(s, "alice", outbound));
-  } finally {
-    db.close();
-  }
+    const reply = await send(b, a.identity.id, { text: "PRIVATE REPLY" });
+    await execute(sb, "bob", reply);
+    await runActions(sa, "alice", await ingest(a, await sync(sa, "alice", a)));
+    assert.equal((await inbox(a)).messages[0].body.text, "PRIVATE REPLY");
+
+    const closed = await disconnect(b, a.identity.id);
+    loseNextKind = "disconnect";
+    await assert.rejects(() => execute(sb, "bob", closed));
+    await execute(sb, "bob", await retry(b, closed.arguments.input.packet.id));
+    await assert.rejects(() => execute(sa, "alice", outbound));
+    assert.equal((await receive(ORIGIN_B, packet)).ok, false);
+    assert.equal((await receive(ORIGIN_B, confirming.arguments.input.packet)).ok, false);
+    await assert.rejects(() => execute(sa, "alice", confirming));
+    await runActions(sa, "alice", await ingest(a, await sync(sa, "alice", a)));
+    const newInvitation = await invite(a);
+    await execute(sa, "alice", newInvitation.request);
+    await execute(sb, "bob", await accept(b, newInvitation.invitation));
+    await runActions(sa, "alice", await ingest(a, await sync(sa, "alice", a)));
+    await runActions(sa, "alice", await ingest(a, await sync(sa, "alice", a)));
+    await runActions(sb, "bob", await ingest(b, await sync(sb, "bob", b)));
+    await execute(sa, "alice", await send(a, b.identity.id, { text: "new consent" }));
+    assert.equal((await sync(sb, "bob", b)).messages.length, 1);
+    assert.equal((await receive(ORIGIN_B, confirming.arguments.input.packet)).ok, false, "Old confirmation cannot attach to the new connection");
+  } finally { da.db.close(); db.db.close(); }
 });
 
 test("event subscription binds ownership, verifies callback, signs notifications, and keeps retry identity", async () => {
   const { db, adapter } = await database();
   let now = Date.now();
-  const s = new Service(adapter, { now: () => now });
-  const a = await createIdentity("A");
+  const s = new Service(adapter, { origin: ORIGIN_A, now: () => now });
+  const a = await createIdentity("A", ORIGIN_A);
   await s.register("alice", registration(a));
   const secret = Buffer.alloc(32, 7),
     seen = [];
@@ -360,7 +271,7 @@ test("event subscription binds ownership, verifies callback, signs notifications
     await assert.rejects(() => unsubscribe(s, "eve", params));
     await unsubscribe(s, "alice", params);
     await s.notify(a.id);
-    assert.equal(db.prepare("SELECT count(*) AS n FROM deliveries").get().n, 0);
+    assert.equal(db.prepare("SELECT count(*) AS n FROM f_deliveries").get().n, 0);
   } finally {
     db.close();
   }

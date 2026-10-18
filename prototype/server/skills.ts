@@ -5,7 +5,6 @@ import cryptography from "../skills/dot-link/scripts/crypto.mjs?raw";
 import protocol from "../skills/dot-link/scripts/protocol.mjs?raw";
 import pkg from "../skills/dot-link/package.json?raw";
 import lock from "../skills/dot-link/package-lock.json?raw";
-import relay from "../skills/dot-link/relay.json?raw";
 const root = "skill://dot-link/dot-link/";
 const files: Record<string, string> = {
   "SKILL.md": skill,
@@ -15,7 +14,6 @@ const files: Record<string, string> = {
   "scripts/protocol.mjs": protocol,
   "package.json": pkg,
   "package-lock.json": lock,
-  "relay.json": relay,
 };
 async function entry() {
   const resources = await Promise.all(

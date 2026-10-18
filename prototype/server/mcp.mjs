@@ -17,12 +17,12 @@ const tools = [
     inputSchema: {
       type: "object",
       properties: Object.fromEntries(
-        ["id", "label", "box", "sign", "proof"].map((k) => [
+        ["id", "label", "box", "sign", "relay", "proof"].map((k) => [
           k,
           { type: "string" },
         ]),
       ),
-      required: ["id", "label", "box", "sign", "proof"],
+      required: ["id", "label", "box", "sign", "relay", "proof"],
       additionalProperties: false,
     },
     annotations: { readOnlyHint: false, idempotentHint: true },
@@ -159,7 +159,7 @@ export async function handleMcp(request, db, ctx, options = {}) {
       },
       401,
     );
-  const service = new Service(db),
+  const service = new Service(db, { origin: new URL(request.url).origin, fetcher }),
     p = rpc.params || {};
   try {
     let answer;

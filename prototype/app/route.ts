@@ -1,7 +1,8 @@
 export function GET() {
   return Response.json({
-    service: "dot-link",
+    service: "dot-link-federated",
     mcp: "/mcp",
-    status: "prototype",
+    federation: "/api/federation",
+    setup: "https://github.com/pdHaku0/DevDayCommunity26/tree/prototype/dot-link",
   });
 }

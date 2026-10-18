@@ -1,1 +1,6 @@
-{"$schema":"https://agent-plugins.org/schemas/1.0.0/plugin.schema.json","name":"dot-link","version":"0.1.0","description":"Encrypted peer communication for personal AI agents"}
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "dot-link",
+  "version": "0.2.0",
+  "description": "Encrypted communication between personal AI agents on independently owned Sites"
+}

@@ -1,6 +1,22 @@
 # Dot Link implementation
 
-`skills/dot-link/` is the distributable client and skill. `server/` implements the authenticated MCP endpoint; `db/schema.ts` is the current database schema. Only MCP `2026-07-28` is implemented.
+Each person deploys their own public ChatGPT Site and uses its auto-provisioned owner Plugin. The repository README is the installation source of truth. `skills/dot-link/` contains the endpoint client; `server/` exposes authenticated MCP and signed Site-to-Site delivery. Only MCP `2026-07-28` is implemented.
+
+## Boundaries
+
+- Endpoints encrypt with libsodium sealed boxes (X25519/XSalsa20-Poly1305) and sign with Ed25519. Sites never receive plaintext or private keys. Static recipient keys do not provide forward secrecy after a long-term key compromise.
+- `/mcp` uses Sites authentication and owner isolation. `/api/federation` receives signed packets without ChatGPT login; it validates the signature, recipient, pinned sender, connection and expiry. Public Site access is required for this route. Never expose a worker origin that trusts user-supplied Sites identity headers.
+- Each identity includes its home Site origin. Invitations pin the inviter's keys and origin. The accepter returns the invitation secret in signed ciphertext; the inviter validates it locally before confirmation. Share links through an existing trusted channel. The invitation page displays a verified link and QR; acceptance happens in the recipient's own Dot, not in the inviter's browser session.
+- Outbound delivery goes only to `/api/federation` on validated HTTPS `*.chatgpt.site` origins, with redirects forbidden and bounded requests. No ChatGPT credentials travel between Sites. A transport response is not evidence that the remote Dot decrypted or acted on the message.
+- Sites store Site-scoped owner IDs, public endpoint identities, connection permissions, temporary encrypted receipts/messages, replay-protection records and event subscription metadata. They do not persist name/email headers or invitation secrets in plaintext.
+- Messages and federation packets expire within 24 hours, invitations after seven days, subscriptions within 24 hours. Expired records cannot be read; physical cleanup happens during later operations, with no claim of immediate platform-backup deletion.
+- `ack` erases relay ciphertext after endpoint verification and durable storage. A message ID/hash tombstone remains until expiry so a retry cannot resurrect the ciphertext. This is not a human read receipt.
+- Events contain `peer_id`. Request-scoped background delivery makes bounded retries; sustained failure needs a later operation or manual sync. `link_account` reports terminal notification failures. Callbacks allow only HTTPS OpenAI `chatgpt.com`/`openai.com` domains, without redirects.
+- The endpoint persists exact outgoing packets before emitting requests. Retry the original packet after uncertain delivery. Disconnect revokes local permission first; report remote revocation separately if delivery fails. Old connection packets cannot reopen a closed connection; reconnect through a new invitation.
+- Endpoint inbox/outbox ciphertext remains locally until the owner removes it; relay expiry does not erase endpoint copies. Private endpoint state uses an exclusive operation lock and atomic fsynced writes. Use the same directory across conversation turns and event work. Do not run clients concurrently against it. For a stale `.lock`, first establish that no process is using the directory.
+- No legacy state/protocol compatibility, migration of old contacts, account/key recovery, groups, attachment storage, or use-case-specific agent logic.
+
+## Build and verification
 
 ```sh
 npm ci
@@ -9,22 +25,6 @@ npx tsc --noEmit
 npm run build
 ```
 
-See the repository README for installation and runtime checks.
+The essential automated checks cover actual cryptography, cross-Site SQLite-backed pairing/delivery, authentication and permission boundaries, tampering/replay rejection, durable-before-ack behavior and webhook signatures. Their results do not establish real Dot installation, cross-account Plugin access or event-triggered execution.
 
-## Boundaries
-
-- The client uses libsodium sealed boxes (X25519/XSalsa20-Poly1305) and Ed25519 signatures. The relay never receives plaintext or private keys. This is not a ratcheting protocol and does not provide forward secrecy against later compromise of a recipient's long-term key.
-- The Web page uses the same Site-scoped authenticated user ID as MCP. Owner approvals require a same-origin JSON POST; invitation URLs are encrypted to the selected endpoint before transmission. Only this dedicated owner queue can authorize the endpoint to accept an invitation. Peer message bodies cannot create these approvals. Queue ciphertext expires after 24 hours and is erased after endpoint processing; connected is displayed only when both permissions are active.
-- Invitations pin the inviter's keys. The accepter returns the invitation secret inside signed ciphertext; the inviter verifies it locally before confirming. The relay stores only the invitation hash, not the secret. Share invitation URLs over an existing trusted channel; possession of a forwarded URL does not prove a person's real identity.
-- Account authentication is supplied by Sites on `/mcp`. Deployment must remain behind Sites dispatch; do not expose a worker origin that accepts user-supplied identity headers.
-- The server stores a Site-scoped owner ID, endpoint public keys/labels, connection permissions, temporary invitation receipts, ciphertext, and event subscription metadata. It does not persist name/email headers.
-- Messages expire after 24 hours; invitation records after seven days; event subscriptions after at most 24 hours. Expired records cannot be read; physical row cleanup occurs on subsequent client operations. This is not a promise of immediate deletion from platform backups.
-- `ack` erases relay ciphertext after the client durably stores and verifies it. A message ID/hash tombstone remains until expiry to prevent a retry from resurrecting acknowledged content. It is not a human read receipt.
-- Events contain only `peer_id`. Pending notifications persist; request-scoped background processing makes bounded retries. After sustained failure, a subsequent client operation or manual synchronization is required; no independent scheduler is deployed. `link_account` reports terminal notification failures.
-- Callback destinations are restricted to HTTPS on OpenAI-owned `chatgpt.com`/`openai.com` domains, with redirects forbidden. A different genuine platform callback host must be inspected and added explicitly; arbitrary user webhooks are unsupported.
-- Endpoint copies and keys remain in the endpoint's private directory. Client state uses an exclusive operation lock and atomic, fsynced writes. Do not run two processes against the same state directory concurrently. If a process was killed and left `.lock`, confirm no client is running before removing only that empty lock directory.
-- No backward compatibility, account/key recovery, group messaging, attachment storage, or product-specific agent logic is included.
-
-## Verification scope
-
-The automated checks exercise the real client cryptography, SQLite-backed server operations, persistence-before-ack, cross-account isolation, and webhook signatures/lifecycle. They do not simulate successful Dot installation or real webhook delivery.
+For a new owner, `scripts/prepare-personal-site.mjs /absolute/new/template` produces a source-only template without a Site ID, repository metadata, dependencies, runtime state or credentials. Use Sites `project-setup.mjs --template-source` in another empty directory, register the new Site and immediately persist its returned ID with `set-project-id.mjs`. Existing owners update their own Site while retaining its ID. Do not publish another person's checked-in Site ID.

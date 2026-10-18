@@ -1,82 +1,72 @@
-# DevDayCommunity26 — Dot Link prototype
+# Dot Link — DevDayCommunity26
 
-個人秘書AI間の暗号化通信。開発ブランチ: `prototype/dot-link`。
-ChatGPT SitesのMCPで認証・接続許可・暗号文中継・MCP Eventsを提供し、暗号化・復号と秘密鍵の保管は各端点で行います。用途の判断は既存のAIに任せます。
+各自が自分のChatGPT Sitesと、その公開時に作られる所有者用Pluginを持つ、個人秘書AI間の暗号化通信です。
 
-- MCP: `https://devday-dot-link.pdhaku0.chatgpt.site/mcp`
-- Sitesはメンバーがアクセスできる公開設定です。MCPと接続操作には**ChatGPT認証が必要**です。
-- [クライアントSkill](prototype/skills/dot-link/SKILL.md) / [実装・保存範囲・制約](prototype/README.md)
-- QRとリンクから同じ招待画面を開き、ChatGPTでログインして自分のDotへの接続を承諾できます。LPは含みません。
+**自分のDot ⇄ 自分のSites ⇄ 相手のSites ⇄ 相手のDot**。本文の暗号化・復号と秘密鍵の保管はDot側で行います。用途や会話の判断は既存のAIに任せます。
 
-## エージェントに渡す文
+## Dotに渡す文
 
-> https://github.com/pdHaku0/DevDayCommunity26/tree/prototype/dot-link のREADMEに従って導入し、私の交換用リンクを出して。
+> https://github.com/pdHaku0/DevDayCommunity26/tree/prototype/dot-link のREADMEに従って、自分のSitesに公開して導入し、私の交換用リンクを出して。
 
-## Dotでの導入確認
+## 導入するエージェントへ
 
-**導入の正常終了は、自分の端点を登録し、サーバーに登録済みの交換用リンクをこの依頼者へ表示することです。** 相手が未指定なら自分が招待側です。相手のURLを要求して待たないでください。ファイル保持probe、Skill自動発見の調査、相手との往復テストはリンク発行の必須条件ではありません。
+**完了条件は、本人のSitesへの端点登録と、登録済みの交換用リンクを本人へ返すことです。** 相手の招待がなければ自分が招待側です。相手のURLを要求して待たないでください。
 
-以前の実行環境確認が終わっている場合、やり直さずここから進めます。**Dot自身のクラウドPC**を使い、利用者のPCやCodexローカルで代用しないでください。
+以下はエージェント向けの実行手順です。利用者にURL・OAuth設定・コマンドの入力を求めません。名前やSite名は会話中の名前、なければ「Dot Link」を使い、選択の質問で止めないでください。
 
-持ち主から導入・登録・受信設定を依頼されたら、その範囲のコード確認、依存インストール、専用保存先への鍵作成、公開鍵登録、イベント購読は手順ごとの会話上の再確認なしで進めてください。プラットフォームの認証・本人承認が必要な場合は従い、止まった操作と理由を短く報告して、独立した準備を続けます。この依頼は無関係な送信や個人情報の共有を許可するものではありません。
+導入依頼の範囲で、コード確認、依存インストール、専用保存先への鍵作成、公開鍵登録、イベント購読まで進めます。会話上の再確認や「続けて」を各手順で挟まず、プラットフォームが要求する本人操作だけを、その場で押すボタンとともに一度で伝えてください。その間も独立した準備は進めます。
 
-1. このブランチの最新ソースを取得します。既存の変更を消さず、取得済みなら更新してください。
-2. 自分のアカウントからMCPへ接続します。
-   - **Sites所有者:** Plugins → Personal → Created by youの **Dot Link development** をInstall / Connectし、既存のPluginを使います。
-   - **他のメンバー:** 所有者のPluginは自分のCreated by youには現れません。ChatGPTのPlugins → ＋ → Add custom MCP serverを開き、上記MCP URLを **Server URL欄**へ入れ、認証を **OAuth** にしてCreate as a plugin → Install / Connectへ進みます。ログインはこの接続操作から行います。[公式Quickstart](https://developers.openai.com/plugins/quickstart)のNo authenticationはサンプル用なので、このサーバーでは選びません。別アカウントでこの設定を完了できることはまだ未検証です。追加の設定項目やエラーが出た場合は、その項目・エラーを報告してください。
-   - **`/mcp`はブラウザで直接開くページではありません。** 直開き時のUnauthorizedは、PluginのOAuth接続が完了したことを意味しません。接続用URLとして設定欄へ入力してください。
-   - 接続後、`link_account`が現在のアカウントで成功することを確認します。Sitesは公開済みです。認証付き接続がうまくいかない場合も、手順3のSkill読み込み、手順4のインストールと専用保存先の準備は進められます。再開時は既存の鍵を使い、登録を完了してください。
-3. リポジトリの `prototype/skills/dot-link/SKILL.md` を読みます。Plugin経由ですでに同Skillが利用できる場合は、それを使えます。自動発見の調査で導入を止めないでください。
-4. クライアントだけをインストールします。サーバー一式のインストールは不要です。
+### 1. 自分のSitesを公開する
+
+1. このブランチの最新ソースを取得し、利用環境の **Sites skill** を読みます。新規メンバーは自分のアカウントで新しいSiteを作ります。取得した `prototype/.openai/hosting.json` のproject IDは開発者のSiteです。自分のSiteとして使わないでください。
+2. 新規Site用の、所有者情報を除いたテンプレートを生成します。出力先は存在しないディレクトリを指定します。
 
    ```sh
-   npm ci --prefix prototype/skills/dot-link
-   node prototype/skills/dot-link/scripts/cli.mjs init "自分のDotの名前"
+   node prototype/scripts/prepare-personal-site.mjs /absolute/path/work/dot-link-template
    ```
 
-   `init`の出力は公開鍵と所有証明だけです。出力の `arguments` を変更せず、認証済みの `link_register` ツールへ渡してください。登録済みの端点があるのにローカル状態が見つからない場合は、新しい鍵を作り直す前に保存先を確認します。
-5. `status`で端点IDを記録します。秘密鍵・状態ファイルの中身は表示しないでください。
+3. 別の空の作業ディレクトリで、Sites skillの `project-setup.mjs --template-source /absolute/path/work/dot-link-template` を実行します。Sitesの `create_site` で新規登録し、返されたIDを直ちに `set-project-id.mjs --project-id <返されたID>` で保存します。以後はその作業ディレクトリを使います。途中再開で同じSiteを重複作成しないでください。
+4. Sites skillの依存インストール、検証・ビルド、ソース同期、公開手順を実行します。`capabilities: ["mcp"]` とD1の `DB` を維持します。**他のSitesから配送を受けるため公開範囲はpublicに設定**し、公開成功時のURLを記録してください。認証情報はログやリポジトリへ書きません。
 
-   ```sh
-   node prototype/skills/dot-link/scripts/cli.mjs status
-   ```
+すでに**本人が所有するDot LinkのSite**を更新する場合は、新規テンプレートを作らずSites skillの既存Site更新手順に従い、そのproject IDを維持します。このREADMEの導入依頼には、各自の通信サーバーの公開が含まれます。Sitesツールを利用できなければ、その制約を報告してください。公開成功を推測で扱わないでください。
 
-6. Dotから `link.inbox_changed` をこの端点の `peer_id` で購読します。イベント受信時は同じSkillと保存先で同期します。購読できない場合は「自動受信は未設定、手動同期が必要」と報告し、リンク発行は続けます。`link_account`に購読が載ることと、実際のイベント起動は別の判定です。
-7. `node prototype/skills/dot-link/scripts/cli.mjs invite` を実行し、出力の `request` をMCPへ渡します。成功後、`invitation` のURLを持ち主に表示して導入完了です。相手の情報やURLは必要ありません。Plugin接続など本人操作で止まった場合も、その操作が終われば同じ鍵で残りを続行します。
+### 2. 自分のPluginにつなぐ
 
-既定の鍵・状態保存先は `~/.local/share/dot-link`。`DOT_LINK_HOME`を変更する場合は通常の会話とイベント実行で同じ値を使います。失敗時も既存の鍵を削除しないでください。
+Sites公開時に作られる**そのSiteの所有者用Plugin**を使います。[Sitesの公式説明](https://learn.chatgpt.com/docs/extend/mcp)。ツールがすでに見えていれば、そのSiteの `link_account` で確認します。
 
-### 接続して通信を確かめる
+見えない場合はSitesの `get_site(include_mcp_connection: true)` でPlugin IDを取得し、`plugin_management.suggest_plugins` でInstall / Connectの案内を出します。本人操作が必要なら、その表示されたカードの「Install」「Connect」など、必要なボタンだけを短く案内します。すでに利用できる場合は案内を省略します。別のDot LinkのPluginと混同しないでください。
 
-相手にも導入とSitesへのアクセスが必要です。招待リンクは既存の連絡経路で渡すか、同じリンクのQRを対面で読み取ります。
+### 3. Dotの鍵を作り、交換リンクを返す
 
-1. 招待をまだ受け取っていないDotはSkillの `invite` を実行し、生成されたMCPリクエストが成功してから、招待リンクを自分の持ち主に表示します。持ち主が既存の連絡経路で相手に渡します。相手が受諾するまでは「招待発行済み・相手の接続待ち」と報告し、通信成功とは扱いません。
-2. B本人がリンクを開き、ChatGPTでログインして自分のDotを選び「接続する」を押します。ブラウザが招待をBの公開鍵へ暗号化し、BのDotへ着信を通知します。未導入ならREADMEで導入してから同じ画面に戻れます。
-3. BのDotはSkillの同期で本人承諾を復号して招待を受理します。AとBが同期し、双方の接続許可が成立すると画面に「接続しました」と出ます。イベント未設定の場合は、双方のDotへ同期を依頼してください。相手の接続待ちは失敗ではありません。
-4. テスト用の短いメッセージを送信します。受信側はイベントから起動し、同じ端点IDで同期・復号できることを確認します。手動同期で届いた場合は「通信成功・イベント起動未確認」と分けて報告してください。
-5. `ack`は端点への保存完了で、人間の既読ではありません。返信や個人情報の共有は、それぞれの持ち主の指示に従います。
+Dot自身のクラウドPCで [Skill](prototype/skills/dot-link/SKILL.md) を読みます。導入元リポジトリを使う場合:
 
-## 確認できている範囲
+```sh
+npm ci --prefix prototype/skills/dot-link
+node prototype/skills/dot-link/scripts/cli.mjs init "自分のDotの名前" "https://自分のSite.chatgpt.site"
+```
 
-以下は実装検証の状況で、交換用リンクを発行するための追加手順ではありません。Skillを手動で読めたことは自動発見の成功には数えません。
+公開成功した**自分のSiteのHTTPS origin**を渡します。`/mcp`等のパスは付けません。出力の `arguments` を変更せず、自分のPluginの `link_register` に渡してください。秘密鍵や状態ファイルの中身は表示しません。
 
-- ローカル: 実暗号を使った接続・送受信、改ざん拒否、アカウント分離、保存後の確認応答、Webhook署名と再試行。型検査・ビルド成功。
-- Sites: 公開配置済み。実Pluginの `link_account` から認証付き応答、公開後の匿名MCP呼び出しの401拒否を確認済み。
-- Dot: もくちゃんから、クラウドPC（Debian / Node.js 24.19.0）で別会話ターンをまたいだ確認用ファイルの指紋一致の報告あり。
-- **未確認:** DotへのSkill自動導入、実MCP Eventsによる起動と同じ鍵での復号、別アカウントの実Dot同士の通信。
+- `status`で端点IDと自分のSiteを確認します。既定の保存先は `~/.local/share/dot-link-federated`。同じ鍵・保存先を通常の会話とイベント実行で使います。旧版の状態・招待・接続は使えません。旧鍵を削除・変換しないでください。`DOT_LINK_HOME`を指定する場合も全実行で同じ値を使います。
+- 自分のPluginのMCP Eventsで `link.inbox_changed` を端点の `peer_id` に対して購読します。購読できない場合は「手動同期が必要」と伝え、リンク発行は続けます。
+- `node prototype/skills/dot-link/scripts/cli.mjs invite` を実行し、出力の `request` を自分のPluginで呼びます。成功後、`invitation` のURLを本人に返して導入完了です。
 
-## Dot側の実行環境確認（未確認の環境だけ）
+自動Skill発見の調査や、相手との通信テストはリンク発行の前提ではありません。Plugin接続待ちなら、その操作が完了してから同じ鍵で登録・リンク発行を続けます。
 
-この確認では秘密鍵や既存データを読みません。ランダムな確認用ファイルを一つ作り、指紋だけを出します。
+## 交換と通信
 
-1. Dot自身のクラウドPCで、Node.js 22以上を使い `node prototype/client/probe.mjs prepare` を実行します。依存パッケージは不要です。
-2. 実行環境・fingerprint・Node.jsのバージョンを報告します。
-3. 別の会話ターンで `node prototype/client/probe.mjs resume <fingerprint>` を実行します。
-4. 指紋が一致した場合に限り「会話ターンをまたいだファイル保持」を確認済みとします。Skill・イベント・秘密鍵の保持を確かめる検証ではありません。
+1. 自分の交換リンクを既存のチャットで相手へ渡すか、リンク先にあるQRを対面で読み取ります。
+2. 相手は、そのリンクだけを**自分のDot**へ渡します。リンク先は署名確認とQR・コピー用です。相手のSiteでログインする必要はありません。
+3. 各Dotが自分のPluginを使い、Skillの `accept` と同期で接続します。署名付きの暗号文を互いのSitesへ配送し、端点で招待の秘密を検証して接続を確定します。
+4. 送信後は相手のSitesが相手のDotへイベントを送ります。手動同期で届いた場合は「暗号化通信成功・イベント起動未確認」と分けて報告してください。
 
-実行場所にアクセスできない場合は別PCへ切り替えず、利用可能な実行ツールと障害を報告してください。
+リンクは信頼できる既存の連絡経路で交換してください。表示名だけで相手本人を確認したことにはなりません。接続は通信許可であり、記憶・予定・ファイルの公開許可ではありません。
 
-## 開発
+## 検証範囲
+
+各自Sites構成への変更後、**別アカウントでの新規Site公開 → 所有者用Plugin接続 → 実Dot間の送受信・イベント起動は実環境での確認が必要**です。以前の単一Siteでの成功は、この構成の検証には数えません。ローカルの暗号・権限テスト、公開成功、Dotの実行結果を分けて報告します。
+
+[実装・保存範囲・制約](prototype/README.md)
 
 ```sh
 npm ci --prefix prototype
@@ -85,5 +75,3 @@ cd prototype
 npx tsc --noEmit
 npm run build
 ```
-
-既存のCloud依存確認はルートで `npm ci && npm run check:cloud`。Sitesの再配置は `prototype/.openai/hosting.json` の既存project IDを使い、公開範囲を維持します。

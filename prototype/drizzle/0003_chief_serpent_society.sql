@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX `f_connection_open` ON `f_connections` (`local`,`remote`) WHERE "f_connections"."status" <> 'closed';

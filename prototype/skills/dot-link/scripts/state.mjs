@@ -1,27 +1,11 @@
 import { mkdir, readFile, open, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import {
-  createIdentity,
-  seal,
-  open as decrypt,
-  sign,
-  openConnectRequest,
-} from "./crypto.mjs";
-import {
-  b64,
-  unb64,
-  digest,
-  encode,
-  publicIdentity,
-  checkIdentity,
-  verify,
-  INVITE_TTL,
-  inviteBytes,
-  readInvitation,
-} from "./protocol.mjs";
+import { createIdentity, seal, open as decrypt, sign, makePacket } from "./crypto.mjs";
+import { PROTOCOL, b64, digest, encode, publicIdentity, checkIdentity,
+  checkPacket, INVITE_TTL, inviteBytes, readInvitation } from "./protocol.mjs";
 export const stateDirectory = () =>
-  process.env.DOT_LINK_HOME || join(homedir(), ".local", "share", "dot-link");
+  process.env.DOT_LINK_HOME || join(homedir(), ".local", "share", "dot-link-federated");
 export async function transact(fn) {
   const dir = stateDirectory();
   await mkdir(dir, { recursive: true, mode: 0o700 });
@@ -42,6 +26,8 @@ export async function transact(fn) {
     } catch (e) {
       if (e.code !== "ENOENT") throw e;
     }
+    if (state && state.protocol !== PROTOCOL)
+      throw new Error("Incompatible local state. Use a fresh DOT_LINK_HOME; old state is not migrated.");
     const result = await fn(state);
     if (result.state) {
       const tmp = join(dir, `state-${crypto.randomUUID()}.tmp`);
@@ -66,104 +52,67 @@ export async function transact(fn) {
   }
 }
 export async function initialize(label, relay) {
-  const u = new URL(relay);
-  if (
-    u.protocol !== "https:" ||
-    u.username ||
-    u.password ||
-    u.pathname !== "/" ||
-    u.search ||
-    u.hash
-  )
-    throw new Error("Expected HTTPS relay origin");
   return {
-    identity: await createIdentity(label),
-    relay: u.origin,
-    peers: {},
-    invites: {},
-    acceptances: {},
-    inbox: {},
-    outbox: {},
+    protocol: PROTOCOL,
+    identity: await createIdentity(label, relay),
+    peers: {}, invites: {}, acceptances: {}, confirmations: {}, inbox: {}, outbox: {},
   };
 }
 export const call = (operation, input) => ({
-  tool: "link_exchange",
-  arguments: { operation, input },
+  tool: "link_exchange", arguments: { operation, input },
 });
+const sameIdentity = (a, b) => JSON.stringify(publicIdentity(a)) === JSON.stringify(publicIdentity(b));
+function pin(state, peer, connectionId) {
+  const previous = state.peers[peer.id];
+  if (previous && !sameIdentity(previous, peer)) throw new Error("Pinned peer identity mismatch");
+  if (previous && previous.connection_id === connectionId) {
+    if (previous.closed) throw new Error("Connection was closed; use a new invitation");
+    return previous;
+  }
+  if (previous && !previous.closed) throw new Error("Peer already has a connection; disconnect first");
+  return state.peers[peer.id] = { ...publicIdentity(peer), active: false, closed: false, connection_id: connectionId };
+}
+function dispatch(state, packet) {
+  state.outbox[packet.id] = packet;
+  return call("dispatch", { packet });
+}
 export async function invite(state) {
-  const secret = b64(crypto.getRandomValues(new Uint8Array(32))),
-    id = await digest(secret);
-  const token = {
-    relay: state.relay,
-    id,
-    secret,
-    expires: Date.now() + INVITE_TTL,
-    peer: publicIdentity(state.identity),
-  };
+  const secret = b64(crypto.getRandomValues(new Uint8Array(32))), id = await digest(secret);
+  const token = { relay: state.identity.relay, id, secret,
+    expires: Date.now() + INVITE_TTL, peer: publicIdentity(state.identity) };
   token.signature = sign(state.identity, inviteBytes(token));
-  const url = `${state.relay}/connect#${b64(encode(token))}`;
+  const url = `${token.relay}/connect#${b64(encode(token))}`;
   state.invites[id] = { secret, url };
   return {
-    request: call("invite.create", {
-      peer_id: state.identity.id,
-      invite_id: id,
-    }),
-    invitation: url,
-    note: "Share the invitation only after invite.create succeeds.",
+    request: call("invite.create", { peer_id: state.identity.id, invite_id: id }),
+    invitation: url, note: "Share the invitation only after invite.create succeeds.",
   };
 }
 export async function accept(state, url) {
-  const t = await readInvitation(url, state.relay);
-  if (t.peer.id === state.identity.id)
-    throw new Error("Cannot connect to yourself");
-  const known = state.peers[t.peer.id];
-  if (known && (known.box !== t.peer.box || known.sign !== t.peer.sign))
-    throw new Error("Peer key mismatch");
-  state.peers[t.peer.id] = { ...publicIdentity(t.peer), active: false };
-  if (!state.acceptances[t.id])
-    state.acceptances[t.id] = await seal(state.identity, t.peer, {
-      kind: "pair",
-      invite_id: t.id,
-      secret: t.secret,
-      peer: publicIdentity(state.identity),
-    });
-  return call("invite.accept", {
-    peer_id: state.identity.id,
-    invite_id: t.id,
-    receipt: state.acceptances[t.id],
+  const t = await readInvitation(url);
+  if (t.peer.id === state.identity.id) throw new Error("Cannot connect to yourself");
+  pin(state, t.peer, t.id);
+  if (state.acceptances[t.id]) return retry(state, state.acceptances[t.id]);
+  const receipt = await seal(state.identity, t.peer, {
+    kind: "pair", invite_id: t.id, secret: t.secret, peer: publicIdentity(state.identity),
   });
+  const packet = await makePacket(state.identity, t.peer, "accept", { invite_id: t.id, receipt });
+  state.acceptances[t.id] = packet.id;
+  return dispatch(state, packet);
 }
 export async function ingest(state, response) {
-  const actions = [],
-    errors = [];
-  for (const request of response.connection_requests || []) {
-    try {
-      const payload = openConnectRequest(state.identity, request);
-      const invitation = await readInvitation(payload.url, state.relay);
-      const expected = await digest(
-        encode(["connect", invitation.id, state.identity.id]),
-      );
-      if (expected !== request.id)
-        throw new Error("Connection request ID mismatch");
-      actions.push(await accept(state, payload.url));
-      actions.push(
-        call("connect.complete", {
-          peer_id: state.identity.id,
-          request_id: request.id,
-          status: "accepted",
-          other: invitation.peer.id,
-        }),
-      );
-    } catch (e) {
-      errors.push({ request_id: request.id, error: e.message });
-      actions.push(
-        call("connect.complete", {
-          peer_id: state.identity.id,
-          request_id: request.id,
-          status: "failed",
-        }),
-      );
+  const actions = [], errors = [];
+  // Apply the server snapshot before new invitations replace a closed connection.
+  for (const p of response.contacts || []) {
+    const pinned = state.peers[p.id];
+    if (!pinned) continue; // Server contacts cannot bootstrap key trust.
+    if (!sameIdentity(pinned, p) || pinned.connection_id !== p.connection_id) {
+      errors.push({ peer_id: p.id, error: "Pinned connection mismatch" });
+      continue;
     }
+    if (p.closed === true) { pinned.closed = true; pinned.active = false; }
+    if (pinned.closed) continue;
+    pinned.active = p.active === true;
   }
   for (const item of response.invitations || []) {
     try {
@@ -171,97 +120,73 @@ export async function ingest(state, response) {
       if (!saved) throw new Error("Unknown local invitation");
       await checkIdentity(item.peer);
       const payload = await decrypt(state.identity, item.peer, item.receipt);
-      if (
-        payload.kind !== "pair" ||
-        payload.invite_id !== item.invite_id ||
-        payload.secret !== saved.secret ||
-        JSON.stringify(publicIdentity(payload.peer)) !==
-          JSON.stringify(publicIdentity(item.peer))
-      )
+      if (payload.kind !== "pair" || payload.invite_id !== item.invite_id ||
+          payload.secret !== saved.secret || !payload.peer || !sameIdentity(payload.peer, item.peer))
         throw new Error("Invitation proof mismatch");
-      const previous = state.peers[item.peer.id];
-      if (
-        previous &&
-        (previous.box !== item.peer.box || previous.sign !== item.peer.sign)
-      )
-        throw new Error("Peer key mismatch");
-      state.peers[item.peer.id] = {
-        ...publicIdentity(item.peer),
-        active: false,
-      };
-      actions.push(
-        call("invite.confirm", {
-          peer_id: state.identity.id,
-          invite_id: item.invite_id,
-          acceptor: item.peer.id,
-        }),
-      );
-    } catch (e) {
-      errors.push({ invite_id: item.invite_id, error: e.message });
-    }
-  }
-  for (const p of response.contacts || []) {
-    const pinned = state.peers[p.id];
-    if (!pinned) continue; // A server-listed contact cannot bootstrap key trust.
-    if (pinned.box !== p.box || pinned.sign !== p.sign) {
-      errors.push({ peer_id: p.id, error: "Peer key mismatch" });
-      continue;
-    }
-    pinned.active = p.active === true;
+      if (saved.acceptor && saved.acceptor !== item.peer.id) throw new Error("Invitation already accepted by another peer");
+      pin(state, item.peer, item.invite_id);
+      saved.acceptor = item.peer.id;
+      let packet;
+      if (state.confirmations[item.invite_id]) {
+        actions.push(await retry(state, state.confirmations[item.invite_id]));
+      } else {
+        packet = await makePacket(state.identity, item.peer, "confirm", { invite_id: item.invite_id });
+        state.confirmations[item.invite_id] = packet.id;
+        actions.push(dispatch(state, packet));
+      }
+    } catch (e) { errors.push({ invite_id: item.invite_id, error: e.message }); }
   }
   const ack = [];
-  for (const e of response.messages || []) {
+  for (const envelope of response.messages || []) {
     try {
-      const peer = state.peers[e.from];
-      if (!peer?.active)
-        throw new Error("Sender is not a pinned active contact");
-      if (state.inbox[e.id]) {
-        if (JSON.stringify(state.inbox[e.id].envelope) !== JSON.stringify(e))
-          throw new Error("Message ID conflict");
+      const peer = state.peers[envelope.from];
+      if (!peer?.active || peer.closed) throw new Error("Sender is not a pinned active contact");
+      const payload = await decrypt(state.identity, peer, envelope);
+      if (payload.kind !== "message" || !Object.hasOwn(payload, "body") || payload.connection_id !== peer.connection_id)
+        throw new Error("Invalid message payload or connection");
+      const previous = state.inbox[envelope.id];
+      if (previous) {
+        if (JSON.stringify(previous.envelope) !== JSON.stringify(envelope)) throw new Error("Message ID conflict");
       } else {
-        const payload = await decrypt(state.identity, peer, e);
-        if (payload.kind !== "message" || !Object.hasOwn(payload, "body"))
-          throw new Error("Invalid message payload");
-        state.inbox[e.id] = { envelope: e, received: Date.now(), read: false };
+        state.inbox[envelope.id] = { envelope, sender: publicIdentity(peer), received: Date.now(), read: false };
       }
-      ack.push(e.id);
-    } catch (e) {
-      errors.push({ message_id: e.id, error: e.message });
-    }
+      ack.push(envelope.id);
+    } catch (e) { errors.push({ message_id: envelope.id, error: e.message }); }
   }
-  if (ack.length)
-    actions.push(call("ack", { peer_id: state.identity.id, message_ids: ack }));
-  // transact persists ciphertext and pinned peers before any acknowledgment is emitted.
-  return {
-    actions,
-    errors,
-    unread: Object.values(state.inbox).filter((m) => !m.read).length,
-  };
+  if (ack.length) actions.push(call("ack", { peer_id: state.identity.id, message_ids: ack }));
+  // transact persists ciphertext and pins before any acknowledgment or dispatch is emitted.
+  return { actions, errors, unread: Object.values(state.inbox).filter((m) => !m.read).length };
 }
 export async function send(state, peerId, body) {
   const peer = state.peers[peerId];
-  if (!peer?.active)
-    throw new Error("Contact is not connected; synchronize first");
-  const envelope = await seal(state.identity, peer, { kind: "message", body });
-  state.outbox[envelope.id] = envelope;
-  return call("send", { envelope });
+  if (!peer?.active || peer.closed) throw new Error("Contact is not connected; synchronize first");
+  const envelope = await seal(state.identity, peer, { kind: "message", connection_id: peer.connection_id, body });
+  return dispatch(state, await makePacket(state.identity, peer, "message", { connection_id: peer.connection_id, envelope }));
+}
+export async function retry(state, packetId) {
+  const packet = state.outbox[packetId];
+  if (!packet) throw new Error("Unknown outgoing packet");
+  await checkPacket(packet);
+  const peer = state.peers[packet.to.id];
+  if (!peer || peer.connection_id !== (packet.body.invite_id ?? packet.body.connection_id) ||
+      (peer.closed && packet.kind !== "disconnect")) throw new Error("Outgoing connection is no longer current");
+  return call("dispatch", { packet });
+}
+export async function disconnect(state, peerId) {
+  const peer = state.peers[peerId];
+  if (!peer) throw new Error("Unknown contact");
+  if (peer.disconnect_packet) return retry(state, peer.disconnect_packet);
+  const packet = await makePacket(state.identity, peer, "disconnect", { connection_id: peer.connection_id });
+  peer.active = false;
+  peer.closed = true;
+  peer.disconnect_packet = packet.id;
+  return dispatch(state, packet);
 }
 export async function inbox(state) {
   const messages = [];
   for (const item of Object.values(state.inbox).filter((m) => !m.read)) {
-    const e = item.envelope,
-      payload = await decrypt(
-        state.identity,
-        state.peers[e.from],
-        e,
-        item.received,
-      );
-    messages.push({
-      id: e.id,
-      from: e.from,
-      label: state.peers[e.from].label,
-      body: payload.body,
-    });
+    const e = item.envelope, payload = await decrypt(state.identity, item.sender, e, item.received);
+    messages.push({ id: e.id, from: e.from, label: item.sender.label, body: payload.body });
   }
   return { messages };
 }

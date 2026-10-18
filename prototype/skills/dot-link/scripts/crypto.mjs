@@ -11,6 +11,9 @@ import {
   checkIdentity,
   MAX_PLAINTEXT,
   MESSAGE_TTL,
+  validateRelay,
+  packetBytes,
+  checkPacket,
 } from "./protocol.mjs";
 await sodium.ready;
 export function sign(identity, bytes) {
@@ -18,11 +21,12 @@ export function sign(identity, bytes) {
     sodium.crypto_sign_detached(bytes, unb64(identity.signSecret, 64)),
   );
 }
-export async function createIdentity(label) {
+export async function createIdentity(label, relay) {
   const box = sodium.crypto_box_keypair(),
     pair = sodium.crypto_sign_keypair();
   const identity = {
     label,
+    relay: validateRelay(relay),
     box: b64(box.publicKey),
     sign: b64(pair.publicKey),
     boxSecret: b64(box.privateKey),
@@ -60,36 +64,13 @@ export async function open(identity, sender, envelope, now = Date.now()) {
   );
   return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
 }
-// Owner-authorized browser requests travel in their own authenticated queue,
-// never in peer messages. Only the selected endpoint can read the invitation.
-export async function sealConnectRequest(recipient, requestId, url) {
-  await checkIdentity(recipient);
-  const payload = encode({
-    kind: "connect",
-    request_id: requestId,
-    peer_id: recipient.id,
-    url,
-  });
-  if (payload.length > 12000) throw new Error("Invitation too large");
-  return b64(sodium.crypto_box_seal(payload, unb64(recipient.box, 32)));
-}
-export function openConnectRequest(identity, request) {
-  if (request.expires <= Date.now())
-    throw new Error("Connection request expired");
-  const bytes = sodium.crypto_box_seal_open(
-    unb64(request.ciphertext),
-    unb64(identity.box, 32),
-    unb64(identity.boxSecret, 32),
-  );
-  const payload = JSON.parse(
-    new TextDecoder("utf-8", { fatal: true }).decode(bytes),
-  );
-  if (
-    payload.kind !== "connect" ||
-    payload.request_id !== request.id ||
-    payload.peer_id !== identity.id ||
-    typeof payload.url !== "string"
-  )
-    throw new Error("Invalid owner connection request");
-  return payload;
+export async function makePacket(identity, to, kind, body, now = Date.now()) {
+  const packet = {
+    id: b64(crypto.getRandomValues(new Uint8Array(24))), kind,
+    from: publicIdentity(identity), to: publicIdentity(to),
+    created: now, expires: now + MESSAGE_TTL, body,
+  };
+  packet.signature = sign(identity, packetBytes(packet));
+  await checkPacket(packet, now);
+  return packet;
 }
