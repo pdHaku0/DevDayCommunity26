@@ -22,7 +22,7 @@ ChatGPT SitesのMCPで認証・接続許可・暗号文中継・MCP Eventsを提
 2. 自分のアカウントからMCPへ接続します。
    - **Sites所有者:** Plugins → Personal → Created by youの **Dot Link development** をInstall / Connectし、既存のPluginを使います。
    - **他のメンバー:** 所有者のPluginは自分のCreated by youには現れません。[公式Quickstart](https://developers.openai.com/plugins/quickstart)のカスタムMCP接続手順で、上記MCP URLを自分のアカウントに登録し、ChatGPTで認証したうえで自分のPersonal Pluginとして設定してください。マーケット公開は不要です。
-   - 接続後、`link_account`が現在のアカウントで成功することを確認します。Sitesは公開済みです。認証付き接続がうまくいかない場合も、手順3のリポジトリからのSkill読み込み、手順4のクライアントインストール、実行環境確認は進められます。鍵の生成と登録は接続可能になってから行ってください。
+   - 接続後、`link_account`が現在のアカウントで成功することを確認します。Sitesは公開済みです。認証付き接続がうまくいかない場合も、手順3のSkill読み込み、手順4のインストールと専用保存先の準備は進められます。再開時は既存の鍵を使い、登録を完了してください。
 3. Plugin経由で `dot-link` Skillが発見できるか確認し、結果を報告します。発見できなければ、その事実を残したうえでリポジトリの `prototype/skills/dot-link/SKILL.md` を読み、以降の検証を続けます。ファイルを手動で読むことは、自動導入の成功には数えません。
 4. クライアントだけをインストールします。サーバー一式のインストールは不要です。
 
