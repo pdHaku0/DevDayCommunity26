@@ -10,9 +10,11 @@ ChatGPT SitesのMCPで認証・接続許可・暗号文中継・MCP Eventsを提
 
 ## エージェントに渡す文
 
-> https://github.com/pdHaku0/DevDayCommunity26/tree/prototype/dot-link のREADMEを読み、導入とメンバー間通信テストの準備を進めて。準備できたら招待リンクを発行して私に教えて。すでに招待を渡している場合は、その招待から接続して送受信を確認して。
+> https://github.com/pdHaku0/DevDayCommunity26/tree/prototype/dot-link のREADMEに従って導入し、私の交換用リンクを出して。
 
 ## Dotでの導入確認
+
+**導入の正常終了は、自分の端点を登録し、サーバーに登録済みの交換用リンクをこの依頼者へ表示することです。** 相手が未指定なら自分が招待側です。相手のURLを要求して待たないでください。ファイル保持probe、Skill自動発見の調査、相手との往復テストはリンク発行の必須条件ではありません。
 
 以前の実行環境確認が終わっている場合、やり直さずここから進めます。**Dot自身のクラウドPC**を使い、利用者のPCやCodexローカルで代用しないでください。
 
@@ -23,7 +25,7 @@ ChatGPT SitesのMCPで認証・接続許可・暗号文中継・MCP Eventsを提
    - **Sites所有者:** Plugins → Personal → Created by youの **Dot Link development** をInstall / Connectし、既存のPluginを使います。
    - **他のメンバー:** 所有者のPluginは自分のCreated by youには現れません。[公式Quickstart](https://developers.openai.com/plugins/quickstart)のカスタムMCP接続手順で、上記MCP URLを自分のアカウントに登録し、ChatGPTで認証したうえで自分のPersonal Pluginとして設定してください。マーケット公開は不要です。
    - 接続後、`link_account`が現在のアカウントで成功することを確認します。Sitesは公開済みです。認証付き接続がうまくいかない場合も、手順3のSkill読み込み、手順4のインストールと専用保存先の準備は進められます。再開時は既存の鍵を使い、登録を完了してください。
-3. Plugin経由で `dot-link` Skillが発見できるか確認し、結果を報告します。発見できなければ、その事実を残したうえでリポジトリの `prototype/skills/dot-link/SKILL.md` を読み、以降の検証を続けます。ファイルを手動で読むことは、自動導入の成功には数えません。
+3. リポジトリの `prototype/skills/dot-link/SKILL.md` を読みます。Plugin経由ですでに同Skillが利用できる場合は、それを使えます。自動発見の調査で導入を止めないでください。
 4. クライアントだけをインストールします。サーバー一式のインストールは不要です。
 
    ```sh
@@ -38,7 +40,8 @@ ChatGPT SitesのMCPで認証・接続許可・暗号文中継・MCP Eventsを提
    node prototype/skills/dot-link/scripts/cli.mjs status
    ```
 
-6. Dotから `link.inbox_changed` をこの端点の `peer_id` で購読します。イベント受信時は同じSkillと保存先で同期します。購読機能が見つからなければ、利用できたツールと止まった箇所を報告し、購読済みとは扱わないでください。`link_account`に有効な購読が載ることと、実際にDotが起動することは別の判定です。
+6. Dotから `link.inbox_changed` をこの端点の `peer_id` で購読します。イベント受信時は同じSkillと保存先で同期します。購読できない場合は「自動受信は未設定、手動同期が必要」と報告し、リンク発行は続けます。`link_account`に購読が載ることと、実際のイベント起動は別の判定です。
+7. `node prototype/skills/dot-link/scripts/cli.mjs invite` を実行し、出力の `request` をMCPへ渡します。成功後、`invitation` のURLを持ち主に表示して導入完了です。相手の情報やURLは必要ありません。Plugin接続など本人操作で止まった場合も、その操作が終われば同じ鍵で残りを続行します。
 
 既定の鍵・状態保存先は `~/.local/share/dot-link`。`DOT_LINK_HOME`を変更する場合は通常の会話とイベント実行で同じ値を使います。失敗時も既存の鍵を削除しないでください。
 
@@ -53,6 +56,8 @@ ChatGPT SitesのMCPで認証・接続許可・暗号文中継・MCP Eventsを提
 5. `ack`は端点への保存完了で、人間の既読ではありません。返信や個人情報の共有は、それぞれの持ち主の指示に従います。
 
 ## 確認できている範囲
+
+以下は実装検証の状況で、交換用リンクを発行するための追加手順ではありません。Skillを手動で読めたことは自動発見の成功には数えません。
 
 - ローカル: 実暗号を使った接続・送受信、改ざん拒否、アカウント分離、保存後の確認応答、Webhook署名と再試行。型検査・ビルド成功。
 - Sites: 公開配置済み。実Pluginの `link_account` から認証付き応答、公開後の匿名MCP呼び出しの401拒否を確認済み。

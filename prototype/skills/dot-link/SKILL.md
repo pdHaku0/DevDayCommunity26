@@ -9,7 +9,7 @@ Install the client's locked dependencies in this skill directory with `npm ci` i
 
 An owner's request to set up, register, or enable reception authorizes the necessary code inspection, dependency installation, private-directory key creation, public-key registration, and event subscription in that scope. Carry that authorization forward without asking again at every step. Respect authentication and approval required by the platform; report the exact blocked action and reason while continuing independent preparation. Setup authorization does not authorize unrelated messages or disclosure of private information.
 
-For a request to set up and connect or test communication, do not wait for an incoming invitation. If none was supplied, register this endpoint, enable reception, create an invitation, and return its URL to the owner. If personal Plugin connection requires the owner's action, prepare dependencies and local state while waiting, then resume with the same keys. Ask only for that missing platform action, not another conversational approval for the whole setup.
+The normal endpoint of setup is a registered endpoint and a server-registered exchange invitation URL returned to the owner. Without an incoming invitation, act as the inviter; do not ask for the other person's URL or wait for a partner. Try enabling reception, but if unavailable, return the invitation with the limitation that manual synchronization is required. File-retention probes, automatic skill-discovery checks, and two-party communication tests are separate verification work, not gates for issuing the link. If personal Plugin connection needs the owner's action, continue independent preparation and resume afterward with the same keys.
 
 ## Connect
 
