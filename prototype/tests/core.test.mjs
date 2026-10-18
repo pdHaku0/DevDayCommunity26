@@ -272,7 +272,7 @@ test("event subscription binds ownership, verifies callback, signs notifications
   await s.register("alice", registration(a));
   const secret = Buffer.alloc(32, 7),
     seen = [];
-  let fail = true;
+  let fail = true, arriveDuringDelivery = false;
   const fetcher = async (url, init) => {
     const body = JSON.parse(init.body),
       headers = init.headers;
@@ -297,6 +297,10 @@ test("event subscription binds ownership, verifies callback, signs notifications
     if (body.type === "verification")
       return Response.json({ challenge: body.challenge });
     seen.push(body);
+    if (arriveDuringDelivery) {
+      arriveDuringDelivery = false;
+      await s.notify(a.id); // A new arrival after the current event started processing.
+    }
     return new Response("", { status: fail ? 503 : 200 });
   };
   const params = {
@@ -324,6 +328,14 @@ test("event subscription binds ownership, verifies callback, signs notifications
     assert.equal(seen.length, 2);
     assert.equal(seen[0].eventId, seen[1].eventId);
     assert.deepEqual(seen[0].data, { peer_id: a.id });
+    arriveDuringDelivery = true;
+    await s.notify(a.id);
+    await dispatch(s, fetcher);
+    assert.equal(db.prepare("SELECT count(*) AS n FROM f_deliveries").get().n, 1,
+      "Completing an in-flight notification must retain a concurrent arrival");
+    await dispatch(s, fetcher);
+    assert.notEqual(seen[2].eventId, seen[3].eventId);
+    assert.equal(db.prepare("SELECT count(*) AS n FROM f_deliveries").get().n, 0);
     await assert.rejects(() => unsubscribe(s, "eve", params));
     await unsubscribe(s, "alice", params);
     await s.notify(a.id);

@@ -74,8 +74,11 @@ export class Service {
   async notify(peer) {
     const subs = await this.all("SELECT id FROM f_subscriptions WHERE peer=? AND expires>?", peer, this.now());
     if (subs.length) await this.db.batch(subs.map(s => this.q(
-      "INSERT INTO f_deliveries(id,subscription,peer,occurred,next) SELECT ?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM f_deliveries WHERE subscription=? AND peer=? AND status='pending')",
-      crypto.randomUUID(), s.id, peer, this.now(), this.now(), s.id, peer,
+      // Each change needs its own delivery: an in-flight callback may already
+      // have triggered a sync before this change arrived. Completing that older
+      // callback must not consume the new wake-up.
+      "INSERT INTO f_deliveries(id,subscription,peer,occurred,next) VALUES(?,?,?,?,?)",
+      crypto.randomUUID(), s.id, peer, this.now(), this.now(),
     )));
   }
   async connection(local, remote, connectionId) {
