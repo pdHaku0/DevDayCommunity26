@@ -70,7 +70,7 @@ export async function manageUpdates(service, owner, args, { release = RELEASE } 
   await service.owned(owner, args.peer_id);
   const installed = releaseValue(release);
   if (args.action === "enable") {
-    await service.run("INSERT INTO f_update_preferences(peer,notified_version,automatic) SELECT id,?,? FROM f_peers WHERE id=? AND owner=? ON CONFLICT(peer) DO UPDATE SET automatic=excluded.automatic", installed.version, args.automatic === true ? 1 : 0, args.peer_id, owner);
+    await service.run("INSERT INTO f_update_preferences(peer,notified_version,automatic) SELECT id,?,? FROM f_peers WHERE id=? AND owner=? ON CONFLICT(peer) DO UPDATE SET automatic=CASE WHEN ? THEN excluded.automatic ELSE f_update_preferences.automatic END", installed.version, args.automatic === true ? 1 : 0, args.peer_id, owner, Object.hasOwn(args,"automatic") ? 1 : 0);
     requireValue(await service.one("SELECT p.peer FROM f_update_preferences p JOIN f_peers k ON k.id=p.peer WHERE p.peer=? AND k.owner=?", args.peer_id, owner), "not_found", "Endpoint no longer exists");
     const subscribed = await remote(service, PUBLISHER, "/api/updates/subscribe", "POST", { origin: service.origin });
     requireValue(subscribed.ok === true, "delivery_remote_rejected", "Update subscription was not confirmed");
@@ -80,6 +80,12 @@ export async function manageUpdates(service, owner, args, { release = RELEASE } 
   if (args.action === "check" || args.action === "enable") {
     latest = releaseValue(await remote(service, PUBLISHER, "/api/updates/release"));
     await applyNotice(service, latest, installed);
+  }
+  // Re-enabling an existing pending release must wake an already-subscribed Dot,
+  // even when its prior delivery was accepted but the update was not applied.
+  if (args.action === "enable" && await updateNotice(service,args.peer_id,{release:installed})) {
+    const queued = await service.one("SELECT d.id FROM f_deliveries d JOIN f_subscriptions s ON s.id=d.subscription WHERE d.peer=? AND d.status='pending' AND s.expires>? LIMIT 1",args.peer_id,service.now());
+    if (!queued) await service.notify(args.peer_id);
   }
   const preference = await service.one("SELECT p.peer,p.automatic FROM f_update_preferences p JOIN f_peers k ON k.id=p.peer WHERE p.peer=?", args.peer_id);
   return { enabled: !!preference, automatic: preference?.automatic === 1, installed_version: installed.version, publisher: PUBLISHER,
@@ -100,8 +106,17 @@ async function publish(service, current) {
         return "removed";
       }
       requireValue(result.ok === true, "delivery_remote_rejected", "Update delivery was not confirmed");
-      await service.run("UPDATE f_update_subscribers SET last_version=?,lease_until=0,retry_after=0 WHERE origin=? AND lease_until=?", current.version, origin, lease);
-      return "delivered";
+      // Site receipt and Dot execution are different. Keep revisiting until the
+      // destination's deployed release confirms the update actually completed.
+      const target = await remote(service,origin,"/api/updates");
+      exact(target,"enabled,installed_version");
+      requireValue(typeof target.enabled === "boolean" && Number.isSafeInteger(target.installed_version) && target.installed_version >= 0,"delivery_invalid_response","Invalid destination release status");
+      if (target.installed_version >= current.version) {
+        await service.run("UPDATE f_update_subscribers SET last_version=?,lease_until=0,retry_after=0 WHERE origin=? AND lease_until=?", current.version, origin, lease);
+        return "updated";
+      }
+      await service.run("UPDATE f_update_subscribers SET lease_until=0,retry_after=? WHERE origin=? AND lease_until=?",service.now()+RETRY_MS,origin,lease);
+      return "notified";
     } catch (error) {
       await service.run("UPDATE f_update_subscribers SET lease_until=0,retry_after=? WHERE origin=? AND lease_until=?", service.now() + RETRY_MS, origin, lease);
       diagnostic(error, service.requestId, "updates.delivery", 502);
@@ -110,7 +125,7 @@ async function publish(service, current) {
   }));
   const count = kind => results.filter(value => value === kind).length;
   const remaining = (await service.one("SELECT count(*) AS n FROM f_update_subscribers WHERE last_version<?", current.version)).n;
-  return { ok: count("failed") === 0, version: current.version, attempted: results.length - count("skipped"), delivered: count("delivered"), removed: count("removed"), failed: count("failed"), remaining, complete: remaining === 0 };
+  return { ok: count("failed") === 0, version: current.version, attempted: results.length - count("skipped"), delivered: count("notified") + count("updated"), updated: count("updated"), awaiting_update: count("notified"), removed: count("removed"), failed: count("failed"), remaining, complete: remaining === 0 };
 }
 export async function handleUpdates(request, service, { release = RELEASE } = {}) {
   try {

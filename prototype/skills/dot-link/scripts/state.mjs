@@ -157,8 +157,19 @@ export async function ingest(state, response) {
     } catch (e) { errors.push({ message_id: diagnosticId(envelope?.id), ...safeError(e, "ingest.message") }); }
   }
   if (ack.length) actions.push(call("ack", { peer_id: state.identity.id, message_ids: ack }));
+  let update = null;
+  if (response.update != null) {
+    const u = response.update;
+    if (u.repository === "https://github.com/pdHaku0/DevDayCommunity26/tree/prototype/dot-link" &&
+        Number.isSafeInteger(u.version) && Number.isSafeInteger(u.installed_version) &&
+        u.installed_version >= 0 && u.version > u.installed_version && typeof u.automatic === "boolean") {
+      update = {version:u.version, installed_version:u.installed_version, repository:u.repository,
+        automatic:u.automatic, next_action:u.automatic ? "apply_update" : "report_update",
+        instructions:"AUTO_UPDATE.md"};
+    } else errors.push(safeError(new ClientError("Invalid update notice"), "ingest.update"));
+  }
   // transact persists ciphertext and pins before any acknowledgment or dispatch is emitted.
-  return { actions, errors, unread: Object.values(state.inbox).filter((m) => !m.read).length };
+  return { actions, errors, update, unread: Object.values(state.inbox).filter((m) => !m.read).length };
 }
 export async function send(state, peerId, body) {
   const peer = state.peers[peerId];

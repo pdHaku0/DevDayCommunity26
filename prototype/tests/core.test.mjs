@@ -77,6 +77,12 @@ test("endpoint cryptography rejects altered ciphertext, identity, expiry and inv
   ]) await assert.rejects(() => decrypt(b, a, { ...message, ...patch }));
   await assert.rejects(() => decrypt(b, a, message, message.expires + 1));
   const state = await initialize("A", ORIGIN_A), issued = await invite(state);
+  const update = {version:3,installed_version:2,automatic:true,repository:"https://github.com/pdHaku0/DevDayCommunity26/tree/prototype/dot-link"};
+  assert.equal((await ingest(state,{update})).update.next_action,"apply_update");
+  assert.equal((await ingest(state,{update:{...update,automatic:false}})).update.next_action,"report_update");
+  const badUpdate = await ingest(state,{update:{...update,repository:"https://evil.test/run"}});
+  assert.equal(badUpdate.update,null);
+  assert.equal(badUpdate.errors[0].stage,"ingest.update");
   await readInvitation(issued.invitation);
   await assert.rejects(() => readInvitation(issued.invitation.replace(ORIGIN_A, ORIGIN_B)));
   for (const url of ["http://a.test.chatgpt.site", "https://chatgpt.site.evil.test", "https://a.test.chatgpt.site/path", "https://a.test.chatgpt.site:444", "https://user@a.test.chatgpt.site"])

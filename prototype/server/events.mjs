@@ -6,7 +6,7 @@ export const eventName = "link.inbox_changed";
 export const eventDefinition = {
   name: eventName,
   description:
-    "Encrypted mail, a connection request, or a software update is waiting for your registered peer. Use the dot-link skill to synchronize; the event contains no message content.",
+    "Encrypted mail, a connection request, or a software update is waiting for your registered peer. Read the bundled dot-link skill at skill://dot-link/dot-link/SKILL.md, synchronize this endpoint, and follow its update instructions; the event contains no message content.",
   delivery: ["webhook"],
   inputSchema: {
     type: "object",
@@ -161,8 +161,7 @@ export async function subscribe(service, owner, p, fetcher = fetch) {
     service.now(),
   );
   const update = await updateNotice(service, subscription.peer);
-  if (pending || invitation || update)
-    await service.notify(subscription.peer);
+  if (pending || invitation || update) await service.notify(subscription.peer);
   return {
     id,
     refreshBefore: new Date(expires).toISOString(),
@@ -238,7 +237,7 @@ export async function dispatch(service, fetcher = fetch) {
         "UPDATE f_deliveries SET attempts=?,next=?,status=? WHERE id=?",
         attempts,
         service.now() + Math.min(3600000, 1000 * 2 ** attempts),
-        status === 413 || attempts >= 6 ? "failed" : "pending",
+        status === 413 ? "failed" : "pending",
         job.id,
       );
     }),
