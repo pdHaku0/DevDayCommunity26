@@ -228,10 +228,18 @@ test("MCP diagnostics separate transport failures without reflecting remote bodi
     [200, () => new Response(sentinel + secret), "delivery_invalid_response", true],
     [200, () => new Response((sentinel + secret).repeat(200)), "delivery_response_too_large", true],
     [302, () => new Response(sentinel + secret, { status: 302, headers: { location: "https://outside.example/" } }), "delivery_redirect", false],
+    [undefined, () => {throw new TypeError(sentinel + secret,{cause:Object.assign(new Error(sentinel),{code:"ENOTFOUND",hostname:secret,stack:secret})});}, "delivery_network", true,
+      {source_error_class:"TypeError",cause_error_class:"Error",cause_code:"ENOTFOUND"}],
+    [undefined, () => {throw new Error("Network connection lost.",{cause:{name:secret,code:secret,message:secret,stack:secret}});}, "delivery_network", true,
+      {source_error_class:"Error",platform_classifier:"network_connection_lost",cause_code:undefined,cause_error_class:undefined}],
+    [undefined, () => {throw new TypeError(sentinel,{cause:Object.assign(new Error(secret),{name:"ConnectTimeoutError",code:"UND_ERR_CONNECT_TIMEOUT"})});}, "delivery_timeout", true,
+      {source_error_class:"TypeError",cause_error_class:"ConnectTimeoutError",cause_code:"UND_ERR_CONNECT_TIMEOUT"}],
+    [undefined, () => {throw new TypeError("Illegal invocation: function called with incorrect `this` reference. See https://developers.cloudflare.com/workers/observability/errors/#illegal-invocation-errors for details.");}, "delivery_network", true,
+      {source_error_class:"TypeError",platform_classifier:"illegal_invocation"}],
   ];
   const requestIds = new Set();
   try {
-    for (const [status, respond, code, retryable] of cases) {
+    for (const [status, respond, code, retryable, observed = {}] of cases) {
       let fetches = 0;
       const response = await handleMcp(new Request(ORIGIN_B + "/mcp", {
         method: "POST", headers: { "content-type": "application/json", "oai-authenticated-user-id": "bob" },
@@ -245,6 +253,7 @@ test("MCP diagnostics separate transport failures without reflecting remote bodi
       assert.equal(error.stage, "federation.transport");
       assert.equal(error.retryable, retryable);
       assert.equal(error.remote_status, status);
+      for (const [key,value] of Object.entries(observed)) assert.equal(error[key],value,key);
       assert.match(error.request_id, /^[0-9a-f-]{36}$/i);
       requestIds.add(error.request_id);
       assert.equal(fetches, 1, "A redirect must never be followed");
@@ -258,9 +267,20 @@ test("MCP diagnostics separate transport failures without reflecting remote bodi
       const exposed = JSON.stringify([rpc, logs]);
       assert.ok(!exposed.includes(sentinel));
       assert.ok(!exposed.includes(secret));
-      assert.ok(logs.some(line => JSON.parse(line).request_id === error.request_id));
+      const logged = logs.map(line => JSON.parse(line)).find(line => line.request_id === error.request_id);
+      assert.ok(logged);
+      for (const [key,value] of Object.entries(observed)) assert.equal(logged[key],value,key);
     }
     assert.equal(requestIds.size, cases.length);
+    // Unlike Node's fetch, the deployed Worker fetch rejects an instance receiver.
+    let boundCalls = 0;
+    const bound = new Service(adapter,{origin:ORIGIN_B,fetcher:function () {
+      assert.equal(this,globalThis);
+      boundCalls++;
+      return Promise.resolve(Response.json({ok:true,pending:true}));
+    }});
+    assert.equal((await execute(bound,"bob",accepting)).delivered,true);
+    assert.equal(boundCalls,1);
   } finally { db.close(); }
 });
 

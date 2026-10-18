@@ -30,7 +30,8 @@ export class Service {
     this.db = db;
     this.requestId = requestId;
     this.origin = validateRelay(origin);
-    this.fetcher = fetcher;
+    // Worker-native fetch requires its global receiver when stored on an instance.
+    this.fetcher = fetcher.bind(globalThis);
     this.now = now;
   }
   q(sql, ...args) { return this.db.prepare(sql).bind(...args); }
