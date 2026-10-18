@@ -1,4 +1,4 @@
-import { updateNotice } from "./updates.mjs";
+import { updateNotice, ensureUpdates } from "./updates.mjs";
 import { LinkError, remoteMetadata, responseJson, transportFailure } from "./errors.mjs";
 import { z } from "zod";
 import {
@@ -46,6 +46,7 @@ export class Service {
   async account(owner) {
     return {
       peers: (await this.all("SELECT * FROM f_peers WHERE owner=? ORDER BY created", owner)).map(publicIdentity),
+      update_registration_errors: (await this.all("SELECT p.peer,p.registration_error FROM f_update_preferences p JOIN f_peers k ON k.id=p.peer WHERE k.owner=? AND p.registration_error IS NOT NULL",owner)).map(p=>({peer_id:p.peer,error:JSON.parse(p.registration_error)})),
       subscriptions: await this.all("SELECT id,peer,expires FROM f_subscriptions WHERE owner=? AND expires>?", owner, this.now()),
       failed_notifications: (await this.one("SELECT count(*) AS n FROM f_deliveries d JOIN f_subscriptions s ON s.id=d.subscription WHERE s.owner=? AND d.status='failed'", owner)).n,
     };
@@ -58,11 +59,11 @@ export class Service {
     const existing = await this.one("SELECT * FROM f_peers WHERE id=?", p.id);
     if (existing) {
       requireThat(existing.owner === owner && same(existing, p), "forbidden", "Registered identity cannot be replaced");
-      return publicIdentity(existing);
+      return {...publicIdentity(existing),update_registration_error:await ensureUpdates(this,p.id)};
     }
     requireThat((await this.one("SELECT count(*) AS n FROM f_peers WHERE owner=?", owner)).n < 4, "limit", "At most four endpoints per account");
     await this.run("INSERT INTO f_peers(id,owner,label,box,sign,relay,created) VALUES(?,?,?,?,?,?,?)", p.id, owner, p.label, p.box, p.sign, p.relay, this.now());
-    return publicIdentity(p);
+    return {...publicIdentity(p),update_registration_error:await ensureUpdates(this,p.id)};
   }
   async unregister(owner, peerId) {
     id.parse(peerId);
@@ -289,11 +290,13 @@ export class Service {
       if (a.message_ids.length) await this.db.batch(a.message_ids.map(mid => this.q("UPDATE f_messages SET envelope=NULL WHERE id=? AND recipient=?", mid, peer.id)));
       return { acknowledged: true };
     }
+    const updateRegistrationError = await ensureUpdates(this,peer.id);
     const rows = await this.all("SELECT * FROM f_connections WHERE local=? ORDER BY rowid DESC", peer.id);
     const contacts = [...new Map(rows.map(c => [c.remote, c]).reverse()).values()].map(c => ({...JSON.parse(c.identity), active: c.status === "active", closed: c.status === "closed", connection_id: c.connection_id}));
     return {
       contacts,
       update: await updateNotice(this, peer.id),
+      update_registration: {registered: !updateRegistrationError, ...(updateRegistrationError ? {error: updateRegistrationError} : {})},
       invitations: (await this.all("SELECT * FROM f_invites WHERE inviter=? AND receipt IS NOT NULL AND confirmed=0 AND NOT EXISTS(SELECT 1 FROM f_connections c WHERE c.local=f_invites.inviter AND c.connection_id=f_invites.id AND c.status='closed')", peer.id)).map(i => ({invite_id: i.id, peer: JSON.parse(i.acceptor), receipt: JSON.parse(i.receipt)})),
       messages: (await this.all("SELECT envelope FROM f_messages WHERE recipient=? AND envelope IS NOT NULL AND expires>? ORDER BY created,id LIMIT 50", peer.id, this.now())).map(m => JSON.parse(m.envelope)),
     };

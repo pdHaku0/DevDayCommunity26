@@ -114,7 +114,8 @@ export const federatedDeliveries = sqliteTable("f_deliveries", {
 export const updatePreferences = sqliteTable("f_update_preferences", {
   peer: text().primaryKey(),
   notified_version: integer().notNull(),
-  automatic: integer().notNull().default(0),
+  publisher_registered: integer().notNull().default(0),
+  registration_error: text(),
 });
 export const updateSubscribers = sqliteTable("f_update_subscribers", {
   origin: text().primaryKey(),

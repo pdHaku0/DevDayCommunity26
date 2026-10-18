@@ -1,4 +1,5 @@
-import test from "node:test";
+import test, { mock } from "node:test";
+mock.method(globalThis,"fetch",async()=>{throw new Error("No external network in tests");});
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { readFile, readdir, mkdtemp, rm } from "node:fs/promises";
@@ -77,9 +78,8 @@ test("endpoint cryptography rejects altered ciphertext, identity, expiry and inv
   ]) await assert.rejects(() => decrypt(b, a, { ...message, ...patch }));
   await assert.rejects(() => decrypt(b, a, message, message.expires + 1));
   const state = await initialize("A", ORIGIN_A), issued = await invite(state);
-  const update = {version:3,installed_version:2,automatic:true,repository:"https://github.com/pdHaku0/DevDayCommunity26/tree/prototype/dot-link"};
+  const update = {version:3,installed_version:2,repository:"https://github.com/pdHaku0/DevDayCommunity26/tree/prototype/dot-link"};
   assert.equal((await ingest(state,{update})).update.next_action,"apply_update");
-  assert.equal((await ingest(state,{update:{...update,automatic:false}})).update.next_action,"report_update");
   const badUpdate = await ingest(state,{update:{...update,repository:"https://evil.test/run"}});
   assert.equal(badUpdate.update,null);
   assert.equal(badUpdate.errors[0].stage,"ingest.update");
@@ -400,7 +400,7 @@ test("unregister is owner-only and idempotent, erases related state, and cannot 
     await subscribe(sa,"alice",subscription(a.identity.id),echo);
     const keptSubscription = await subscribe(sa,"alice",subscription(keep.identity.id),echo);
     for (const peer of [a.identity.id,keep.identity.id])
-      await sa.run("INSERT INTO f_update_preferences(peer,notified_version) VALUES(?,?)",peer,"test-version");
+      await sa.run("INSERT INTO f_update_preferences(peer,notified_version) VALUES(?,?) ON CONFLICT(peer) DO UPDATE SET notified_version=excluded.notified_version",peer,"test-version");
     await execute(sb,"bob",await accept(b,issued.invitation));
     const accepted = await ingest(a,await sync(sa,"alice",a));
     assert.deepEqual(accepted.errors,[]);

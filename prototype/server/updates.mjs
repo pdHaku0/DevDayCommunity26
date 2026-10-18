@@ -45,13 +45,13 @@ async function remote(service, origin, path, method = "GET", body) {
   } catch (error) { throw transportFailure(error, "updates.transport", "delivery", signal); }
 }
 async function enabled(service) {
-  return !!await service.one("SELECT p.peer FROM f_update_preferences p JOIN f_peers k ON k.id=p.peer LIMIT 1");
+  return !!await service.one("SELECT id FROM f_peers LIMIT 1");
 }
 export async function updateNotice(service, peerId, { release = RELEASE } = {}) {
   const current = releaseValue(release);
-  const row = await service.one("SELECT p.notified_version,p.automatic FROM f_update_preferences p JOIN f_peers k ON k.id=p.peer WHERE p.peer=?", peerId);
+  const row = await service.one("SELECT p.notified_version FROM f_update_preferences p JOIN f_peers k ON k.id=p.peer WHERE p.peer=?", peerId);
   return row && row.notified_version > current.version
-    ? { version: row.notified_version, repository: REPOSITORY, installed_version: current.version, automatic: row.automatic === 1 } : null;
+    ? { version: row.notified_version, repository: REPOSITORY, installed_version: current.version } : null;
 }
 async function applyNotice(service, latest, installed) {
   if (latest.version <= installed.version) return 0;
@@ -63,35 +63,23 @@ async function applyNotice(service, latest, installed) {
   ]);
   return results[1]?.meta?.changes ?? 0;
 }
-export async function manageUpdates(service, owner, args, { release = RELEASE } = {}) {
-  exact(args, args?.action === "enable" && Object.hasOwn(args, "automatic") ? "action,peer_id,automatic" : "action,peer_id");
-  requireValue(args.automatic === undefined || typeof args.automatic === "boolean", "invalid_input", "Invalid automatic update preference");
-  requireValue(["enable", "disable", "status", "check"].includes(args.action) && /^[A-Za-z0-9_-]{43}$/.test(args.peer_id), "invalid_input", "Invalid update action or peer");
-  await service.owned(owner, args.peer_id);
-  const installed = releaseValue(release);
-  if (args.action === "enable") {
-    await service.run("INSERT INTO f_update_preferences(peer,notified_version,automatic) SELECT id,?,? FROM f_peers WHERE id=? AND owner=? ON CONFLICT(peer) DO UPDATE SET automatic=CASE WHEN ? THEN excluded.automatic ELSE f_update_preferences.automatic END", installed.version, args.automatic === true ? 1 : 0, args.peer_id, owner, Object.hasOwn(args,"automatic") ? 1 : 0);
-    requireValue(await service.one("SELECT p.peer FROM f_update_preferences p JOIN f_peers k ON k.id=p.peer WHERE p.peer=? AND k.owner=?", args.peer_id, owner), "not_found", "Endpoint no longer exists");
-    const subscribed = await remote(service, PUBLISHER, "/api/updates/subscribe", "POST", { origin: service.origin });
-    requireValue(subscribed.ok === true, "delivery_remote_rejected", "Update subscription was not confirmed");
+export async function ensureUpdates(service,peerId) {
+  try {
+    await service.run("INSERT INTO f_update_preferences(peer,notified_version) SELECT id,? FROM f_peers WHERE id=? ON CONFLICT(peer) DO NOTHING",RELEASE.version,peerId);
+    const state=await service.one("SELECT publisher_registered FROM f_update_preferences WHERE peer=?",peerId);
+    if (!state || state.publisher_registered === 1) return null;
+    const subscribed=await remote(service,PUBLISHER,"/api/updates/subscribe","POST",{origin:service.origin});
+    requireValue(subscribed.ok === true,"delivery_remote_rejected","Update registration was not confirmed");
+    const latest=releaseValue(await remote(service,PUBLISHER,"/api/updates/release"));
+    await applyNotice(service,latest,RELEASE);
+    await service.run("UPDATE f_update_preferences SET publisher_registered=1,registration_error=NULL WHERE peer=?",peerId);
+    return null;
+  } catch(error) {
+    const detail=diagnostic(error,service.requestId,"updates.transport",502);
+    const safe={code:detail.code,stage:detail.stage,retryable:detail.retryable,request_id:detail.request_id};
+    await service.run("UPDATE f_update_preferences SET registration_error=? WHERE peer=?",JSON.stringify(safe),peerId);
+    return safe;
   }
-  if (args.action === "disable") await service.run("DELETE FROM f_update_preferences WHERE peer=?", args.peer_id);
-  let latest;
-  if (args.action === "check" || args.action === "enable") {
-    latest = releaseValue(await remote(service, PUBLISHER, "/api/updates/release"));
-    await applyNotice(service, latest, installed);
-  }
-  // Re-enabling an existing pending release must wake an already-subscribed Dot,
-  // even when its prior delivery was accepted but the update was not applied.
-  if (args.action === "enable" && await updateNotice(service,args.peer_id,{release:installed})) {
-    const queued = await service.one("SELECT d.id FROM f_deliveries d JOIN f_subscriptions s ON s.id=d.subscription WHERE d.peer=? AND d.status='pending' AND s.expires>? LIMIT 1",args.peer_id,service.now());
-    if (!queued) await service.notify(args.peer_id);
-  }
-  const preference = await service.one("SELECT p.peer,p.automatic FROM f_update_preferences p JOIN f_peers k ON k.id=p.peer WHERE p.peer=?", args.peer_id);
-  return { enabled: !!preference, automatic: preference?.automatic === 1, installed_version: installed.version, publisher: PUBLISHER,
-    update: latest && latest.version > installed.version
-      ? { version: latest.version, repository: REPOSITORY, installed_version: installed.version, automatic: preference?.automatic === 1 }
-      : await updateNotice(service, args.peer_id, { release: installed }) };
 }
 async function publish(service, current) {
   const candidates = await service.all("SELECT origin FROM f_update_subscribers WHERE last_version<? AND lease_until<=? AND retry_after<=? ORDER BY origin LIMIT ?", current.version, service.now(), service.now(), BATCH);
@@ -150,7 +138,7 @@ export async function handleUpdates(request, service, { release = RELEASE } = {}
       requireValue(origin === body.origin, "invalid_input", "Expected a canonical Site origin");
       const target = await remote(service, origin, "/api/updates");
       exact(target, "enabled,installed_version");
-      requireValue(target.enabled === true && Number.isSafeInteger(target.installed_version) && target.installed_version >= 0, "forbidden", "The target Site has not enabled update notifications");
+      requireValue(target.enabled === true && Number.isSafeInteger(target.installed_version) && target.installed_version >= 0, "forbidden", "The target Site has no registered endpoints");
       await service.run("INSERT INTO f_update_subscribers(origin,last_version) SELECT ?,? WHERE (SELECT count(*) FROM f_update_subscribers)<? OR EXISTS(SELECT 1 FROM f_update_subscribers WHERE origin=?) ON CONFLICT(origin) DO UPDATE SET last_version=max(f_update_subscribers.last_version,excluded.last_version)", origin, Math.min(target.installed_version, current.version), MAX_SUBSCRIBERS, origin);
       requireValue(await service.one("SELECT origin FROM f_update_subscribers WHERE origin=?", origin), "limit", "Update subscriber limit reached");
       return json({ ok: true });

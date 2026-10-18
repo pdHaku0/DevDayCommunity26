@@ -162,14 +162,16 @@ export async function ingest(state, response) {
     const u = response.update;
     if (u.repository === "https://github.com/pdHaku0/DevDayCommunity26/tree/prototype/dot-link" &&
         Number.isSafeInteger(u.version) && Number.isSafeInteger(u.installed_version) &&
-        u.installed_version >= 0 && u.version > u.installed_version && typeof u.automatic === "boolean") {
+        u.installed_version >= 0 && u.version > u.installed_version) {
       update = {version:u.version, installed_version:u.installed_version, repository:u.repository,
-        automatic:u.automatic, next_action:u.automatic ? "apply_update" : "report_update",
+        next_action:"apply_update",
         instructions:"AUTO_UPDATE.md"};
     } else errors.push(safeError(new ClientError("Invalid update notice"), "ingest.update"));
   }
   // transact persists ciphertext and pins before any acknowledgment or dispatch is emitted.
-  return { actions, errors, update, unread: Object.values(state.inbox).filter((m) => !m.read).length };
+  const update_registration = typeof response.update_registration?.registered === "boolean"
+    ? {registered:response.update_registration.registered} : null;
+  return { actions, errors, update, update_registration, unread: Object.values(state.inbox).filter((m) => !m.read).length };
 }
 export async function send(state, peerId, body) {
   const peer = state.peers[peerId];

@@ -36,6 +36,13 @@
       "when": 1792307077229,
       "tag": "0004_clear_gauntlet",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1792309097868,
+      "tag": "0005_small_trauma",
+      "breakpoints": true
     }
   ]
 }

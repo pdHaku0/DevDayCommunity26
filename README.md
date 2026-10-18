@@ -6,7 +6,7 @@
 
 ## Dotに渡す文
 
-> https://github.com/pdHaku0/DevDayCommunity26/tree/prototype/dot-link のREADMEに従って、自分のSitesに公開し、今後の自動更新も有効にして、私の交換用リンクを出して。
+> https://github.com/pdHaku0/DevDayCommunity26/tree/prototype/dot-link のREADMEに従って、自分のSitesに公開して導入し、私の交換用リンクを出して。
 
 ## 導入するエージェントへ
 
@@ -14,7 +14,7 @@
 
 以下はエージェント向けの実行手順です。利用者にURL・OAuth設定・コマンドの入力を求めません。名前やSite名は会話中の名前、なければ「Dot Link」を使い、選択の質問で止めないでください。
 
-導入依頼の範囲で、コード確認、依存インストール、専用保存先への鍵作成、公開鍵登録、イベント購読まで進めます。上の文は、この固定リポジトリから本人の既存Siteと端点を今後更新する継続的な許可も含みます。会話上の再確認や「続けて」を各手順や更新ごとに挟まず、プラットフォームが要求する本人操作だけを、その場で押すボタンとともに一度で伝えてください。その間も独立した準備は進めます。
+導入依頼の範囲で、コード確認、依存インストール、専用保存先への鍵作成、公開鍵登録、イベント購読まで進めます。自動更新は標準動作です。導入後は、この固定リポジトリの更新をMCP Eventsで受け、本人の既存Siteと端点を更新します。会話上の再確認や「続けて」を各手順や更新ごとに挟まず、プラットフォームが要求する本人操作だけを、その場で押すボタンとともに一度で伝えてください。その間も独立した準備は進めます。
 
 ### 最短経路
 
@@ -57,7 +57,7 @@ node prototype/skills/dot-link/scripts/cli.mjs init "自分のDotの名前" "htt
 
 - `init`出力の `arguments.id` を端点ID、`arguments.relay` を自分のSiteとして使います。途中再開時の確認には `status` を使えます。既定の保存先は `~/.local/share/dot-link-federated`。同じ鍵・保存先を通常の会話とイベント実行で使います。旧版の状態・招待・接続は使えません。旧鍵を削除・変換しないでください。`DOT_LINK_HOME`を指定する場合も全実行で同じ値を使います。
 - 自分のPluginのMCP Eventsで `link.inbox_changed` を端点の `peer_id` に対して購読します。購読できない場合は「手動同期が必要」と伝え、リンク発行は続けます。
-- 上の文のように自動更新も依頼されている場合、自分のPluginの `link_updates` に `{ "action": "enable", "peer_id": "端点ID", "automatic": true }` を渡します。成功応答と `status` の `enabled: true, automatic: true`、MCP Eventsの有効な購読を確認します。更新の適用は[自動更新手順](prototype/AUTO_UPDATE.md)に従います。配信元へ渡すのは公開Siteのoriginと配信状態のみです。失敗した設定を有効と報告せず、調査しながら交換リンク発行は続けます。自動更新の依頼がない場合は勝手に有効化しません。
+- `link_register` と `link_exchange` の同期で更新配信へ自動登録されます。追加ツールや有効化操作は不要です。MCP Eventsの有効な購読を確認し、更新は[自動更新手順](prototype/AUTO_UPDATE.md)で適用します。配信元へ渡すのは公開Siteのoriginと配信状態のみです。自動登録や購読の失敗は調査し、成功と報告せず交換リンク発行は続けます。
 - `node prototype/skills/dot-link/scripts/cli.mjs invite` を実行し、出力の `request` を自分のPluginで呼びます。成功後、`invitation` のURLを本人に返して導入完了です。
 
 自動Skill発見の調査や、相手との通信テストはリンク発行の前提ではありません。Plugin接続待ちなら、その操作が完了してから同じ鍵で登録・リンク発行を続けます。
@@ -86,13 +86,13 @@ Dotに「Dot Linkの登録を削除して」と伝えると、自分のSiteの `
 
 ## 更新通知とアップデート
 
-更新通知は各自のSiteからMCP EventsでDotへ届きます。上の導入文で許可を保存した後は、Dotが固定配信元の新しい版を確認し、[自動更新手順](prototype/AUTO_UPDATE.md)で既存Siteと端点を更新します。正常完了・変更なしは毎回通知せず、失敗・本人操作が必要なときだけ短く伝えます。プラットフォームの実行承認は別に残り、設定保存だけで将来の無人実行を保証しません。停止は `link_updates` の `disable`。登録削除でもその端点の通知を止めます。
+自動更新は標準動作です。更新通知がMCP EventsでDotへ届くと、固定配信元の版を確認し、[自動更新手順](prototype/AUTO_UPDATE.md)で既存Siteと端点を更新します。更新用の追加ツールや設定切替はありません。正常完了・変更なしは毎回通知せず、失敗・本人操作が必要なときだけ短く伝えます。プラットフォームの実行承認は別に残り、通知受付だけで将来の無人実行を保証しません。端点の登録削除後は自動再登録しません。
 
-**導入済みの人は、この一文を一度だけDotへ渡してください。** 自動更新機能が入る前のSiteも、この指示で既存Siteを更新して設定します。
+**導入済みの人は、この一文を一度だけDotへ渡してください。** 自動更新機能が入る前のSiteも、この指示で既存Siteを更新します。
 
-> https://github.com/pdHaku0/DevDayCommunity26/tree/prototype/dot-link のREADMEに従って、私のDot Linkを更新し、今後の自動更新も有効にして。
+> https://github.com/pdHaku0/DevDayCommunity26/tree/prototype/dot-link のREADMEに従って、私のDot Linkを更新して。
 
-エージェントは本人の既存project ID・鍵・連絡先・保存先を保持して[自動更新手順](prototype/AUTO_UPDATE.md)を実行し、`link_updates` の `enable` に `automatic: true` を渡して設定を読み戻します。通知だけ登録して終わらず、既存のMCP Events購読も確認します。中断時は進捗から再開し、Site作り直し・再登録・招待の再交換で置き換えません。
+エージェントは本人の既存project ID・鍵・連絡先・保存先を保持して[自動更新手順](prototype/AUTO_UPDATE.md)を実行して読み戻します。既存の `link_register`・`link_exchange` で自動登録されるため、新しいツールやチャットの作り直しを求めません。MCP Events購読も確認します。中断時は進捗から再開し、Site作り直し・再登録・招待の再交換で置き換えません。
 
 開発者が更新を配信するときは `prototype/release.json` の版番号を増やし、GitHubへソースをpushしてから固定の配信元Siteを公開します。公開成功後、配信元の `/api/updates/publish` へPOSTします。この操作は公開済みの固定版だけを通知し、任意の本文やコードを受け付けません。通知受付だけでは完了扱いせず、受信Siteの `installed_version` が配信版以上になったことを読み戻して適用を確認します。適用確認済みのSiteには再通知しません。未適用・失敗は永続キューに残し、配信の再試行・次回同期・イベント再購読で回復します。各Siteは固定配信元の版情報を照合し、MCP EventsでDotを起動します。定期確認タスクは使わず、定刻の再試行は保証しません。Siteの版確認だけでは、Dot側のSkill切替や実行まで確認したことにはなりません。
 
